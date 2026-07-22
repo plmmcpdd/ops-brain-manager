@@ -50,12 +50,49 @@ class RegistryTests(unittest.TestCase):
         workspace.mkdir()
         data = ops_brain.new_registry()
         ops_brain.add_client(data, "客户甲", str(workspace), "attached")
-        with self.assertRaisesRegex(ops_brain.RegistryError, "已登记"):
+        with self.assertRaisesRegex(ops_brain.RegistryError, "冲突"):
             ops_brain.add_client(data, "客户乙", str(workspace), "attached")
         alias = self.root / "alias"
         alias.symlink_to(workspace, target_is_directory=True)
-        with self.assertRaisesRegex(ops_brain.RegistryError, "已登记"):
+        with self.assertRaisesRegex(ops_brain.RegistryError, "冲突"):
             ops_brain.add_client(data, "客户丙", str(alias), "attached")
+
+    def test_attach_rejects_child_and_parent_workspace_paths(self):
+        parent = self.root / "parent"
+        child = parent / "child"
+        child.mkdir(parents=True)
+        ops_brain.attach(self.args(name="父客户", workspace=str(parent)))
+        with self.assertRaisesRegex(ops_brain.RegistryError, "父子目录"):
+            ops_brain.attach(self.args(name="子客户", workspace=str(child)))
+
+        reverse_registry = self.root / "reverse.json"
+        ops_brain.attach(SimpleNamespace(registry=reverse_registry, name="子客户", workspace=str(child)))
+        with self.assertRaisesRegex(ops_brain.RegistryError, "父子目录"):
+            ops_brain.attach(SimpleNamespace(registry=reverse_registry, name="父客户", workspace=str(parent)))
+
+    def test_create_and_archived_customer_reject_containment(self):
+        parent = self.root / "parent"
+        parent.mkdir()
+        ops_brain.attach(self.args(name="父客户", workspace=str(parent)))
+        child = parent / "new-child"
+        with self.assertRaisesRegex(ops_brain.RegistryError, "父子目录"):
+            ops_brain.create(self.args(name="子客户", workspace=str(child)))
+        self.assertFalse(child.exists())
+        ops_brain.change_status(self.args(client="父客户"), "archived")
+        existing_child = parent / "existing-child"
+        existing_child.mkdir()
+        with self.assertRaisesRegex(ops_brain.RegistryError, "包括归档客户"):
+            ops_brain.attach(self.args(name="归档冲突", workspace=str(existing_child)))
+
+    def test_symlink_child_containment_is_rejected(self):
+        parent = self.root / "parent"
+        child = parent / "child"
+        child.mkdir(parents=True)
+        alias = self.root / "parent-alias"
+        alias.symlink_to(parent, target_is_directory=True)
+        ops_brain.attach(self.args(name="父客户", workspace=str(parent)))
+        with self.assertRaisesRegex(ops_brain.RegistryError, "父子目录"):
+            ops_brain.attach(self.args(name="符号链接子客户", workspace=str(alias / "child")))
 
     def test_archived_path_stays_reserved_archive_keeps_directory_and_restore_works(self):
         workspace = self.root / "client"
@@ -90,8 +127,25 @@ class RegistryTests(unittest.TestCase):
                 ops_brain.open_workspace(self.args(client="客户甲", app="not-installed"))
         self.assertEqual(before, self.registry.read_bytes())
 
+    def test_open_fails_when_registered_workspace_has_been_deleted(self):
+        workspace = self.root / "client"
+        workspace.mkdir()
+        ops_brain.attach(self.args(name="客户甲", workspace=str(workspace)))
+        workspace.rmdir()
+        with self.assertRaisesRegex(ops_brain.RegistryError, "已不存在"):
+            ops_brain.open_workspace(self.args(client="客户甲", app=None))
+
+    def test_create_rejects_an_existing_regular_file(self):
+        target = self.root / "not-a-directory"
+        target.write_text("file", encoding="utf-8")
+        with self.assertRaisesRegex(ops_brain.RegistryError, "创建目标必须不存在或为空目录"):
+            ops_brain.create(self.args(name="客户甲", workspace=str(target)))
+        self.assertEqual(target.read_text(encoding="utf-8"), "file")
+
     def test_legacy_is_preserved_without_inference(self):
-        legacy = {"version": 1, "clients": [{"id": "old", "name": "Old", "workspace": str(self.root), "status": "active"}]}
+        old_workspace = self.root / "old"
+        old_workspace.mkdir()
+        legacy = {"version": 1, "clients": [{"id": "old", "name": "Old", "workspace": str(old_workspace), "status": "active"}]}
         self.registry.write_text(json.dumps(legacy), encoding="utf-8")
         loaded = ops_brain.load_registry(self.registry)
         self.assertNotIn("origin", loaded["clients"][0])
@@ -126,6 +180,13 @@ class RegistryTests(unittest.TestCase):
         output = io.StringIO()
         with redirect_stdout(output):
             self.assertEqual(ops_brain.doctor(self.args()), 2)
+
+    def test_doctor_returns_two_for_wrong_version_or_missing_clients(self):
+        for payload in ({"version": 99, "clients": []}, {"version": 1}):
+            self.registry.write_text(json.dumps(payload), encoding="utf-8")
+            output = io.StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(ops_brain.doctor(self.args()), 2)
 
     def test_atomic_write_uses_temporary_file_and_preserves_old_file_on_replace_failure(self):
         self.registry.write_text('{"old": true}\n', encoding="utf-8")
@@ -181,6 +242,26 @@ class RegistryTests(unittest.TestCase):
         self.assertIn("not absolute", report)
         self.assertIn("containment relationship", report)
         self.assertIn("archived workspace remains reserved", report)
+
+    def test_doctor_reports_each_containment_pair_once(self):
+        parent = self.root / "parent"
+        child = parent / "child"
+        child.mkdir(parents=True)
+        data = {
+            "version": 1,
+            "clients": [
+                {"id": "parent", "name": "Parent", "workspace": str(parent), "status": "active", "origin": "created"},
+                {"id": "child", "name": "Child", "workspace": str(child), "status": "active", "origin": "created"},
+            ],
+        }
+        self.registry.write_text(json.dumps(data), encoding="utf-8")
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(ops_brain.doctor(self.args()), 1)
+        conflicts = [line for line in output.getvalue().splitlines() if "conflicts with" in line]
+        self.assertEqual(len(conflicts), 1)
+        self.assertIn("Parent", conflicts[0])
+        self.assertIn("Child", conflicts[0])
 
 
 class ExternalIntegrityTests(unittest.TestCase):

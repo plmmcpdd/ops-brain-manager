@@ -17,6 +17,8 @@
 python3 ops_brain.py create --name "客户 A" --workspace /home/rong/workspaces/client-a
 python3 ops_brain.py attach --name "客户 B" --workspace /home/rong/workspaces/client-b
 python3 ops_brain.py list
+python3 ops_brain.py list --all
+python3 ops_brain.py show --client client-a
 python3 ops_brain.py open --client client-a
 python3 ops_brain.py archive --client client-a
 python3 ops_brain.py restore --client client-a
@@ -26,6 +28,8 @@ python3 ops_brain.py doctor
 `create` 只创建新的空目录并登记；如果目标目录已经存在，必须为空。它不会执行 Git clone、不会运行 `cheat-init`、不会创建 `.cheat-state.json`，也不会生成任何 Cheat 文件。
 
 `attach` 只登记一个已经存在的目录，绝不向该目录写入标记或内容。`archive` 只更新 Registry 状态，不移动或删除工作区；归档路径仍被保留，不能分配给其他客户。
+
+客户工作区必须彼此独立：两个客户不能使用同一路径，也不能让任一路径成为另一工作区的父目录或子目录（包括符号链接解析后的真实路径）。`list --all` 用于同时查看 active 与 archived 客户。
 
 进入客户工作区后，由用户自行手动初始化全局 Runtime：
 
@@ -52,6 +56,8 @@ python .\ops_brain.py doctor
 ```
 
 请优先在 WSL Ubuntu-E 中管理 WSL 路径。
+
+`--registry <path>` 可用于测试或高级的本地登记册隔离；日常使用默认的 `.ops-brain/clients.json` 即可。
 
 ## 验证
 

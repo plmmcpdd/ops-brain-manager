@@ -37,6 +37,11 @@ def is_same_or_child(path: str, parent: str) -> bool:
         return False
 
 
+def workspace_paths_conflict(first: str, second: str) -> bool:
+    """True when two real workspace paths are equal or nested in either direction."""
+    return is_same_or_child(first, second) or is_same_or_child(second, first)
+
+
 def client_id(name: str) -> str:
     value = re.sub(r"[^\w]+", "-", name.strip().casefold(), flags=re.UNICODE).strip("-_")
     if not value:
@@ -112,8 +117,12 @@ def validate_new_client(data: dict[str, Any], name: str, workspace: str) -> tupl
         workspace_value = existing.get("workspace")
         if not isinstance(workspace_value, str):
             raise RegistryError("登记册含有无效工作区路径；请先运行 doctor 检查。")
-        if canonical_path(workspace_value) == path:
-            raise RegistryError(f"该工作区已登记给客户：{existing.get('name', '<unknown>')}（包括归档客户）。")
+        existing_path = canonical_path(workspace_value)
+        if workspace_paths_conflict(existing_path, path):
+            raise RegistryError(
+                f"工作区与客户 {existing.get('name', '<unknown>')} 冲突（包括归档客户）："
+                f"已有路径 {existing_path}；新路径 {path}。客户工作区不能相同或形成父子目录关系。"
+            )
     return identifier, path
 
 
@@ -121,7 +130,7 @@ def validate_registry_for_write(data: dict[str, Any]) -> None:
     """Do not persist a known-inconsistent existing registry through a write command."""
     identifiers: set[str] = set()
     names: set[str] = set()
-    paths: set[str] = set()
+    paths: list[str] = []
     for index, client in enumerate(data["clients"]):
         if not isinstance(client, dict) or not all(
             isinstance(client.get(field), str) and client[field]
@@ -133,11 +142,11 @@ def validate_registry_for_write(data: dict[str, Any]) -> None:
         if "origin" in client and client["origin"] not in VALID_ORIGINS:
             raise RegistryError(f"登记册 client[{index}] 来源无效；请先运行 doctor 检查。")
         identifier, name, path = client["id"].casefold(), client["name"].casefold(), canonical_path(client["workspace"])
-        if identifier in identifiers or name in names or path in paths:
-            raise RegistryError("登记册存在重复客户或路径；请先运行 doctor 检查。")
+        if identifier in identifiers or name in names or any(workspace_paths_conflict(path, existing) for existing in paths):
+            raise RegistryError("登记册存在重复客户或冲突路径；请先运行 doctor 检查。")
         identifiers.add(identifier)
         names.add(name)
-        paths.add(path)
+        paths.append(path)
 
 
 def add_client(data: dict[str, Any], name: str, workspace: str, origin: str) -> dict[str, Any]:
@@ -263,9 +272,7 @@ def open_workspace(args: argparse.Namespace) -> int:
     return 0
 
 
-def _doctor_record(
-    client: Any, index: int, seen_ids: set[str], seen_names: set[str], seen_paths: dict[str, int]
-) -> tuple[list[str], list[str]]:
+def _doctor_record(client: Any, index: int, seen_ids: set[str], seen_names: set[str]) -> tuple[list[str], list[str]]:
     prefix = f"client[{index}]"
     issues: list[str] = []
     notices: list[str] = []
@@ -291,10 +298,6 @@ def _doctor_record(
     real_workspace = canonical_path(workspace)
     if workspace != real_workspace:
         issues.append(f"{prefix}: workspace is a non-canonical or symlink alias: {workspace} -> {real_workspace}")
-    if real_workspace in seen_paths:
-        issues.append(f"{prefix}: duplicate real workspace with client[{seen_paths[real_workspace]}]")
-    else:
-        seen_paths[real_workspace] = index
     if not Path(workspace).is_dir():
         issues.append(f"{prefix}: workspace does not exist: {workspace}")
     origin = client.get("origin", "legacy")
@@ -325,11 +328,26 @@ def doctor(args: argparse.Namespace) -> int:
     notices: list[str] = []
     seen_ids: set[str] = set()
     seen_names: set[str] = set()
-    seen_paths: dict[str, int] = {}
     for index, client in enumerate(data["clients"]):
-        record_issues, record_notices = _doctor_record(client, index, seen_ids, seen_names, seen_paths)
+        record_issues, record_notices = _doctor_record(client, index, seen_ids, seen_names)
         issues.extend(record_issues)
         notices.extend(record_notices)
+    valid_paths = [
+        (index, client, canonical_path(client["workspace"]))
+        for index, client in enumerate(data["clients"])
+        if isinstance(client, dict)
+        and isinstance(client.get("name"), str)
+        and isinstance(client.get("workspace"), str)
+        and os.path.isabs(client["workspace"])
+    ]
+    for position, (first_index, first, first_path) in enumerate(valid_paths):
+        for second_index, second, second_path in valid_paths[position + 1:]:
+            if workspace_paths_conflict(first_path, second_path):
+                relation = "identical" if first_path == second_path else "contains"
+                issues.append(
+                    f"client[{first_index}] {first['name']} ({first_path}) conflicts with "
+                    f"client[{second_index}] {second['name']} ({second_path}): {relation} workspace paths"
+                )
     for notice in notices:
         print(f"NOTICE: {notice}")
     if issues:
