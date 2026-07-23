@@ -195,9 +195,10 @@ def _create_failure(created_directory: bool, target: Path, error: Exception) -> 
 def create(args: argparse.Namespace) -> int:
     data = load_registry(args.registry)
     validate_registry_for_write(data)
-    target = Path(args.workspace)
+    workspace = args.workspace or str(Path(args.workspace_root) / client_id(args.name))
+    target = Path(workspace)
     # Validate before creating anything. This also reserves archived paths.
-    validate_new_client(data, args.name, args.workspace)
+    validate_new_client(data, args.name, workspace)
     created_directory = False
     try:
         if target.exists():
@@ -206,7 +207,7 @@ def create(args: argparse.Namespace) -> int:
         else:
             target.mkdir(parents=True)
             created_directory = True
-        record = add_client(data, args.name, args.workspace, "created")
+        record = add_client(data, args.name, workspace, "created")
         save_registry(args.registry, data)
     except Exception as exc:
         raise _create_failure(created_directory, target, exc) from exc
@@ -227,6 +228,39 @@ def list_clients(args: argparse.Namespace) -> int:
     for client in clients:
         print(f"{client.get('id', '<invalid>')}\t{client.get('status', '<invalid>')}\t{client.get('name', '<invalid>')}\t{client.get('workspace', '<invalid>')}")
     return 0
+
+
+def json_client(client: dict[str, Any]) -> dict[str, Any]:
+    """The public, machine-readable client shape; never expose Registry storage details."""
+    return {
+        "client_id": client.get("id"),
+        "display_name": client.get("name"),
+        "workspace": client.get("workspace"),
+        "status": client.get("status"),
+        "origin": client.get("origin", "legacy"),
+    }
+
+
+def resolve_launch(data: dict[str, Any], selector: str) -> dict[str, Any]:
+    client = find_client(data, selector)
+    workspace = client.get("workspace")
+    workspace_exists = isinstance(workspace, str) and Path(workspace).is_dir()
+    status = client.get("status")
+    if status != "active":
+        reason = "client is not active"
+    elif not workspace_exists:
+        reason = "workspace does not exist"
+    else:
+        reason = "ready"
+    return {
+        "launch_allowed": reason == "ready",
+        "client_id": client.get("id"),
+        "display_name": client.get("name"),
+        "workspace": workspace,
+        "workspace_exists": workspace_exists,
+        "status": status,
+        "reason": reason,
+    }
 
 
 def show(args: argparse.Namespace) -> int:
@@ -315,15 +349,13 @@ def _doctor_record(client: Any, index: int, seen_ids: set[str], seen_names: set[
     return issues, notices
 
 
-def doctor(args: argparse.Namespace) -> int:
+def doctor_report(registry_path: Path) -> tuple[int, dict[str, Any]]:
     try:
-        data = load_registry(args.registry)
+        data = load_registry(registry_path)
     except RegistryError as exc:
-        print(f"ERROR: {exc}")
-        return 2
-    if not args.registry.exists():
-        print("OK: registry is absent; no clients are registered.")
-        return 0
+        return 2, {"ok": False, "code": "registry_error", "findings": [], "notices": [], "error": str(exc)}
+    if not registry_path.exists():
+        return 0, {"ok": True, "code": "ok", "findings": [], "notices": ["registry is absent; no clients are registered"], "error": None}
     issues: list[str] = []
     notices: list[str] = []
     seen_ids: set[str] = set()
@@ -348,14 +380,57 @@ def doctor(args: argparse.Namespace) -> int:
                     f"client[{first_index}] {first['name']} ({first_path}) conflicts with "
                     f"client[{second_index}] {second['name']} ({second_path}): {relation} workspace paths"
                 )
-    for notice in notices:
-        print(f"NOTICE: {notice}")
     if issues:
-        for issue in issues:
+        return 1, {"ok": False, "code": "findings", "findings": issues, "notices": notices, "error": None}
+    return 0, {"ok": True, "code": "ok", "findings": [], "notices": notices, "error": None, "clients_checked": len(data["clients"])}
+
+
+def doctor(args: argparse.Namespace) -> int:
+    exit_code, report = doctor_report(args.registry)
+    for notice in report["notices"]:
+        print(f"NOTICE: {notice}")
+    if exit_code == 2:
+        print(f"ERROR: {report['error']}")
+    elif exit_code == 1:
+        for issue in report["findings"]:
             print(f"ISSUE: {issue}")
-        return 1
-    print(f"OK: registry is structurally valid; {len(data['clients'])} client(s) checked.")
-    return 0
+    else:
+        print(f"OK: registry is structurally valid; {report.get('clients_checked', 0)} client(s) checked.")
+    return exit_code
+
+
+def emit_json(payload: dict[str, Any]) -> None:
+    """Windows PowerShell 5.1-safe: exactly one ASCII JSON object on stdout."""
+    print(json.dumps(payload, ensure_ascii=True, separators=(",", ":")))
+
+
+def run_json_command(args: argparse.Namespace) -> int:
+    try:
+        if args.command == "list":
+            clients = load_registry(args.registry)["clients"]
+            if not args.all:
+                clients = [client for client in clients if isinstance(client, dict) and client.get("status") == "active"]
+            emit_json({"ok": True, "code": "ok", "data": {"clients": [json_client(client) for client in clients]}, "error": None})
+            return 0
+        if args.command == "show":
+            client = find_client(load_registry(args.registry), args.client)
+            emit_json({"ok": True, "code": "ok", "data": json_client(client), "error": None})
+            return 0
+        if args.command == "doctor":
+            exit_code, report = doctor_report(args.registry)
+            emit_json({"ok": report["ok"], "code": report["code"], "data": {"findings": report["findings"], "notices": report["notices"], "clients_checked": report.get("clients_checked", 0)}, "error": report["error"]})
+            if report["error"]:
+                print(report["error"], file=sys.stderr)
+            return exit_code
+        if args.command == "resolve-launch":
+            payload = resolve_launch(load_registry(args.registry), args.client)
+            emit_json({"ok": True, "code": "ok", "data": payload, "error": None})
+            return 0
+        raise RegistryError(f"JSON mode is not supported for {args.command}")
+    except RegistryError as exc:
+        emit_json({"ok": False, "code": "registry_error", "data": None, "error": str(exc)})
+        print(str(exc), file=sys.stderr)
+        return 2
 
 
 def parser() -> argparse.ArgumentParser:
@@ -365,10 +440,14 @@ def parser() -> argparse.ArgumentParser:
     for name, handler in (("attach", attach), ("create", create)):
         command = commands.add_parser(name)
         command.add_argument("--name", required=True)
-        command.add_argument("--workspace", required=True)
+        workspace_group = command.add_mutually_exclusive_group(required=True)
+        workspace_group.add_argument("--workspace")
+        if name == "create":
+            workspace_group.add_argument("--workspace-root")
         command.set_defaults(handler=handler)
     command = commands.add_parser("list")
     command.add_argument("--all", action="store_true")
+    command.add_argument("--json", dest="json_output", action="store_true")
     command.set_defaults(handler=list_clients)
     for name, status in (("archive", "archived"), ("restore", "active")):
         command = commands.add_parser(name)
@@ -376,18 +455,26 @@ def parser() -> argparse.ArgumentParser:
         command.set_defaults(handler=lambda args, target_status=status: change_status(args, target_status))
     command = commands.add_parser("show")
     command.add_argument("--client", required=True)
+    command.add_argument("--json", dest="json_output", action="store_true")
     command.set_defaults(handler=show)
     command = commands.add_parser("open")
     command.add_argument("--client", required=True)
     command.add_argument("--app", help="显式启动的程序，例如 code")
     command.set_defaults(handler=open_workspace)
     command = commands.add_parser("doctor")
+    command.add_argument("--json", dest="json_output", action="store_true")
     command.set_defaults(handler=doctor)
+    command = commands.add_parser("resolve-launch")
+    command.add_argument("--client", required=True)
+    command.add_argument("--json", dest="json_output", action="store_true")
+    command.set_defaults(handler=lambda args: 0)
     return root
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
+    if getattr(args, "json_output", False):
+        return run_json_command(args)
     try:
         return args.handler(args)
     except RegistryError as exc:

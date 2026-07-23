@@ -1,0 +1,113 @@
+﻿Describe 'Ops Brain Windows launcher source' {
+    It 'contains no bash -lc command construction' {
+        $sourceRoot = $env:OPS_BRAIN_LAUNCHER_SOURCE
+        if (-not $sourceRoot) { throw 'OPS_BRAIN_LAUNCHER_SOURCE must point to windows-entry.' }
+        $module = Get-Content -LiteralPath (Join-Path $sourceRoot 'launcher\OpsBrainLauncher.psm1') -Raw -Encoding UTF8
+        $module | Should -Not -Match 'bash\s+-lc'
+    }
+    It 'uses the required Remote WSL and absolute path workspace contract' {
+        $sourceRoot = $env:OPS_BRAIN_LAUNCHER_SOURCE
+        if (-not $sourceRoot) { throw 'OPS_BRAIN_LAUNCHER_SOURCE must point to windows-entry.' }
+        $client = Get-Content -LiteralPath (Join-Path $sourceRoot 'templates\open_ops_client.ps1') -Raw -Encoding UTF8
+        $module = Get-Content -LiteralPath (Join-Path $sourceRoot 'launcher\OpsBrainLauncher.psm1') -Raw -Encoding UTF8
+        $client | Should -Match '--new-window'
+        $client | Should -Match '--remote'
+        $module | Should -Match 'folders=@'
+        $module | Should -Match 'path=\[string\]\$Launch.workspace'
+    }
+    It 'passes the non-Pester fallback checks' {
+        $sourceRoot = $env:OPS_BRAIN_LAUNCHER_SOURCE
+        if (-not $sourceRoot) { throw 'OPS_BRAIN_LAUNCHER_SOURCE must point to windows-entry.' }
+        & (Join-Path $PSScriptRoot 'run_launcher_fallback.ps1')
+        $LASTEXITCODE | Should -Be 0
+    }
+    It 'writes BOM customer PowerShell entries and ASCII CRLF customer CMD files' {
+        $sourceRoot = $env:OPS_BRAIN_LAUNCHER_SOURCE
+        $temp = Join-Path $env:TEMP ('ops-brain-encoding-' + [guid]::NewGuid().ToString())
+        try {
+            & (Join-Path $sourceRoot 'deploy_windows_entry.ps1') -TargetRoot $temp
+            $module = Join-Path $temp '系统文件_请勿修改\Launcher\OpsBrainLauncher.psm1'
+            Import-Module $module -Force
+            $client = [pscustomobject]@{ client_id='中文客户'; display_name='中文 客户'; workspace='/tmp/中文客户'; status='active'; origin='created' }
+            $projection = New-OpsProjection -Root $temp -Client $client
+            $entryBytes = [System.IO.File]::ReadAllBytes((Join-Path $projection 'open_ops_brain_entry.ps1'))
+            @($entryBytes[0], $entryBytes[1], $entryBytes[2]) | Should -Be @(239,187,191)
+            $cmdBytes = [System.IO.File]::ReadAllBytes((Join-Path $projection '打开运营大脑.cmd'))
+            ($cmdBytes | Where-Object { $_ -gt 127 }).Count | Should -Be 0
+            @($cmdBytes[0], $cmdBytes[1], $cmdBytes[2]) | Should -Not -Be @(239,187,191)
+            [System.Text.Encoding]::ASCII.GetString($cmdBytes) | Should -Match "`r`n"
+            $workspace = New-OpsWorkspace -ProjectionRoot $projection -Launch ([pscustomobject]@{ client_id='中文客户'; display_name='中文 客户'; workspace='/tmp/中文客户' }) -Runtime ([pscustomobject]@{ auto_start_agent=$false })
+            $workspaceBytes = [System.IO.File]::ReadAllBytes($workspace)
+            @($workspaceBytes[0], $workspaceBytes[1], $workspaceBytes[2]) | Should -Not -Be @(239,187,191)
+        } finally { if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Recurse -Force } }
+    }
+    It 'runs generated customer PowerShell and CMD entries in TestMode' {
+        $sourceRoot = $env:OPS_BRAIN_LAUNCHER_SOURCE
+        $temp = Join-Path $env:TEMP ('ops-brain-entry-' + [guid]::NewGuid().ToString())
+        try {
+            & (Join-Path $sourceRoot 'deploy_windows_entry.ps1') -TargetRoot $temp -SyncProjections
+            $env:OPS_BRAIN_TEST_MODE = '1'
+            & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $temp '客户\austin-hvac-demo\open_ops_brain_entry.ps1')
+            $LASTEXITCODE | Should -Be 0
+            & cmd.exe /c (Join-Path $temp '客户\austin-hvac-demo\打开运营大脑.cmd')
+            $LASTEXITCODE | Should -Be 0
+        } finally { Remove-Item Env:OPS_BRAIN_TEST_MODE -ErrorAction SilentlyContinue; if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Recurse -Force } }
+    }
+    It 'generates an Agent folderOpen task only when enabled without secrets or prompts' {
+        $sourceRoot = $env:OPS_BRAIN_LAUNCHER_SOURCE
+        $temp = Join-Path $env:TEMP ('ops-brain-task-' + [guid]::NewGuid().ToString())
+        try {
+            Import-Module (Join-Path $sourceRoot 'launcher\OpsBrainLauncher.psm1') -Force
+            $launch = [pscustomobject]@{ client_id='client-a'; display_name='Client A'; workspace='/tmp/client-a' }
+            $disabled = New-OpsWorkspace -ProjectionRoot $temp -Launch $launch -Runtime ([pscustomobject]@{ auto_start_agent=$false })
+            (Get-Content -LiteralPath $disabled -Raw -Encoding UTF8 | ConvertFrom-Json).PSObject.Properties.Name | Should -Not -Contain 'tasks'
+            $enabled = New-OpsWorkspace -ProjectionRoot $temp -Launch $launch -Runtime ([pscustomobject]@{ auto_start_agent=$true; agent_launcher_wsl='/tmp/launch_ops_agent.sh'; agent_command_wsl='/tmp/claude-deepseek' })
+            $data = Get-Content -LiteralPath $enabled -Raw -Encoding UTF8 | ConvertFrom-Json
+            $task = $data.tasks.tasks[0]
+            $task.command | Should -Be 'bash'
+            $task.options.cwd | Should -Be '/tmp/client-a'
+            $task.runOptions.runOn | Should -Be 'folderOpen'
+            $task.runOptions.instanceLimit | Should -Be 1
+            ($task.args -join ' ') | Should -Not -Match 'prompt|token|key'
+        } finally { if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Recurse -Force } }
+    }
+    It 'keeps WSL stderr separate from Manager JSON stdout and finds fallback code.cmd' {
+        $sourceRoot = $env:OPS_BRAIN_LAUNCHER_SOURCE
+        $temp = Join-Path $env:TEMP ('ops-brain-streams-' + [guid]::NewGuid().ToString())
+        $oldLocal = $env:LOCALAPPDATA
+        $oldPath = $env:PATH
+        try {
+            New-Item -ItemType Directory -Path $temp -Force | Out-Null
+            $shim = Join-Path $temp 'wsl-shim.ps1'
+            [System.IO.File]::WriteAllText($shim, "param()`r`nWrite-Output '{""ok"":true,""code"":""ok"",""data"":{},""error"":null}'`r`nWrite-Error -Message 'harmless warning' -ErrorAction Continue`r`nexit 0`r`n", (New-Object System.Text.UTF8Encoding($false)))
+            Import-Module (Join-Path $sourceRoot 'launcher\OpsBrainLauncher.psm1') -Force
+            $runtime = [pscustomobject]@{ wsl_distribution='Ubuntu-E'; manager_wsl_path='/tmp/manager' }
+            $result = Invoke-OpsManagerJson -Runtime $runtime -ManagerArguments @('doctor','--json') -WslCommand $shim
+            $result.Payload.ok | Should -BeTrue
+            $result.Stderr | Should -Match 'harmless warning'
+            $fallback = Join-Path $temp 'Programs\Microsoft VS Code\bin'
+            New-Item -ItemType Directory -Path $fallback -Force | Out-Null
+            $fallbackCode = Join-Path $fallback 'code.cmd'
+            [System.IO.File]::WriteAllText($fallbackCode, "@echo off`r`n", [System.Text.Encoding]::ASCII)
+            $env:LOCALAPPDATA = $temp
+            $env:PATH = ''
+            (Get-OpsCodeCommand).Source | Should -Be $fallbackCode
+        } finally {
+            $env:LOCALAPPDATA = $oldLocal; $env:PATH = $oldPath
+            if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Recurse -Force }
+        }
+    }
+    It 'returns visible nonzero output through customer CMD when the shared script is missing' {
+        $sourceRoot = $env:OPS_BRAIN_LAUNCHER_SOURCE
+        $temp = Join-Path $env:TEMP ('ops-brain-failure-' + [guid]::NewGuid().ToString())
+        try {
+            & (Join-Path $sourceRoot 'deploy_windows_entry.ps1') -TargetRoot $temp -SyncProjections
+            Remove-Item -LiteralPath (Join-Path $temp '系统文件_请勿修改\Launcher\open_ops_client.ps1') -Force
+            $env:OPS_BRAIN_TEST_MODE = '1'
+            $output = & cmd.exe /c (Join-Path $temp '客户\austin-hvac-demo\打开运营大脑.cmd') 2>&1
+            $LASTEXITCODE | Should -Not -Be 0
+            (@($output) -join "`n") | Should -Not -BeNullOrEmpty
+            (@($output) -join "`n") | Should -Match 'Ops Brain launch failed'
+        } finally { Remove-Item Env:OPS_BRAIN_TEST_MODE -ErrorAction SilentlyContinue; if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Recurse -Force } }
+    }
+}

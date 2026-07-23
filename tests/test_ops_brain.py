@@ -35,6 +35,12 @@ class RegistryTests(unittest.TestCase):
         client = ops_brain.load_registry(self.registry)["clients"][0]
         self.assertEqual(client["origin"], "created")
 
+    def test_create_workspace_root_uses_manager_client_id(self):
+        root = self.root / "clients"
+        self.assertEqual(ops_brain.main(["--registry", str(self.registry), "create", "--name", "客户 A", "--workspace-root", str(root)]), 0)
+        client = ops_brain.load_registry(self.registry)["clients"][0]
+        self.assertEqual(client["workspace"], ops_brain.canonical_path(root / "客户-a"))
+
     def test_attach_does_not_modify_external_directory(self):
         workspace = self.root / "external"
         workspace.mkdir()
@@ -262,6 +268,36 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(len(conflicts), 1)
         self.assertIn("Parent", conflicts[0])
         self.assertIn("Child", conflicts[0])
+
+    def test_json_contract_is_single_ascii_object_and_resolve_launch_is_read_only(self):
+        workspace = self.root / "客户 工作区"
+        workspace.mkdir()
+        ops_brain.attach(self.args(name="中文 客户", workspace=str(workspace)))
+        output, errors = io.StringIO(), io.StringIO()
+        with redirect_stdout(output), patch("sys.stderr", errors):
+            self.assertEqual(ops_brain.main(["--registry", str(self.registry), "list", "--json"]), 0)
+        raw = output.getvalue()
+        self.assertTrue(raw.endswith("\n"))
+        self.assertTrue(raw[:-1].isascii())
+        self.assertEqual(errors.getvalue(), "")
+        self.assertEqual(json.loads(raw)["data"]["clients"][0]["display_name"], "中文 客户")
+        before = self.registry.read_bytes()
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(ops_brain.main(["--registry", str(self.registry), "resolve-launch", "--client", "中文 客户", "--json"]), 0)
+        resolved = json.loads(output.getvalue())["data"]
+        self.assertTrue(resolved["launch_allowed"])
+        self.assertTrue(resolved["workspace_exists"])
+        self.assertEqual(before, self.registry.read_bytes())
+
+    def test_json_doctor_failure_keeps_stdout_json_only(self):
+        self.registry.write_text("{broken", encoding="utf-8")
+        output, errors = io.StringIO(), io.StringIO()
+        with redirect_stdout(output), patch("sys.stderr", errors):
+            self.assertEqual(ops_brain.main(["--registry", str(self.registry), "doctor", "--json"]), 2)
+        self.assertTrue(output.getvalue()[:-1].isascii())
+        self.assertFalse(json.loads(output.getvalue())["ok"])
+        self.assertNotEqual(errors.getvalue(), "")
 
 
 class ExternalIntegrityTests(unittest.TestCase):

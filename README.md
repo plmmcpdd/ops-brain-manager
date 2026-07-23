@@ -59,6 +59,31 @@ python .\ops_brain.py doctor
 
 `--registry <path>` 可用于测试或高级的本地登记册隔离；日常使用默认的 `.ops-brain/clients.json` 即可。
 
+## Windows 桌面入口（Phase 1/2/3/5）
+
+入口源位于 `windows-entry/`。在 Windows PowerShell 5.1 中显式部署到 `E:\运营大脑`：
+
+```powershell
+& "\\wsl.localhost\Ubuntu-E\home\rong\projects\content-ops-lab\ops-brain-manager\windows-entry\deploy_windows_entry.ps1" -SyncProjections
+```
+
+部署只创建 Windows 投影、配置和启动文件；真实客户工作区仍在 WSL。默认不自动启动 `claude-deepseek`，用户在 VS Code Remote WSL 工作区中手动运行它。
+
+Windows Launcher 通过 ASCII 安全 JSON 调用 WSL Manager。机器接口可用于入口层：
+
+```bash
+python3 ops_brain.py list --all --json
+python3 ops_brain.py show --client client-a --json
+python3 ops_brain.py resolve-launch --client client-a --json
+python3 ops_brain.py doctor --json
+```
+
+`create` 也支持由 Manager 生成默认客户目录名：
+
+```bash
+python3 ops_brain.py create --name "客户 A" --workspace-root /home/rong/projects/content-ops-clients
+```
+
 ## 验证
 
 ```bash
