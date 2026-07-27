@@ -14,6 +14,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from ops_brain_publishos.client import PerformanceClient
+from ops_brain_publishos.config import load_config, load_token
+from ops_brain_publishos.errors import PublishOSError
+from ops_brain_publishos.sync import is_due, pending_content_refs, quarantine, sync_one
+
 REGISTRY_VERSION = 1
 DEFAULT_REGISTRY = Path(__file__).resolve().parent / ".ops-brain" / "clients.json"
 UPSTREAM_RUNTIME = Path("/home/rong/tools/cheat-on-content")
@@ -131,6 +136,7 @@ def validate_registry_for_write(data: dict[str, Any]) -> None:
     identifiers: set[str] = set()
     names: set[str] = set()
     paths: list[str] = []
+    publishos_active: set[str] = set()
     for index, client in enumerate(data["clients"]):
         if not isinstance(client, dict) or not all(
             isinstance(client.get(field), str) and client[field]
@@ -147,6 +153,19 @@ def validate_registry_for_write(data: dict[str, Any]) -> None:
         identifiers.add(identifier)
         names.add(name)
         paths.append(path)
+        integration = client.get("integrations")
+        if integration is not None:
+            if not isinstance(integration, dict):
+                raise RegistryError(f"登记册 client[{index}] integrations 无效；请先运行 doctor 检查。")
+            publishos = integration.get("publishos")
+            if publishos is not None:
+                if not isinstance(publishos, dict) or not isinstance(publishos.get("enabled"), bool) or not isinstance(publishos.get("client_id"), str) or not publishos["client_id"].strip():
+                    raise RegistryError(f"登记册 client[{index}] PublishOS 集成无效；请先运行 doctor 检查。")
+                if client["status"] == "active" and publishos["enabled"]:
+                    key = publishos["client_id"].casefold()
+                    if key in publishos_active:
+                        raise RegistryError("登记册存在重复 active PublishOS client ID；请先运行 doctor 检查。")
+                    publishos_active.add(key)
 
 
 def add_client(data: dict[str, Any], name: str, workspace: str, origin: str) -> dict[str, Any]:
@@ -306,6 +325,132 @@ def open_workspace(args: argparse.Namespace) -> int:
     return 0
 
 
+def _publishos_mapping(client: dict[str, Any]) -> str | None:
+    integration = client.get("integrations", {}).get("publishos") if isinstance(client.get("integrations"), dict) else None
+    if isinstance(integration, dict) and integration.get("enabled") is True and isinstance(integration.get("client_id"), str) and integration["client_id"].strip():
+        return integration["client_id"].strip()
+    return None
+
+
+def publishos_link(args: argparse.Namespace) -> int:
+    identifier = args.publishos_client_id.strip()
+    if not identifier:
+        raise RegistryError("PublishOS client ID 不能为空。")
+    data = load_registry(args.registry)
+    validate_registry_for_write(data)
+    client = find_client(data, args.client)
+    old = _publishos_mapping(client)
+    for other in data["clients"]:
+        if other is not client and other.get("status") == "active" and _publishos_mapping(other) and _publishos_mapping(other).casefold() == identifier.casefold():
+            raise RegistryError("该 PublishOS client ID 已关联到另一个 active 客户。")
+    if old == identifier:
+        print("PublishOS 映射未变化。")
+        return 0
+    integrations = client.setdefault("integrations", {})
+    if not isinstance(integrations, dict):
+        raise RegistryError("客户 integrations 无效。")
+    integrations["publishos"] = {"enabled": True, "client_id": identifier}
+    save_registry(args.registry, data)
+    print(f"已关联 PublishOS client ID：{old or '<none>'} -> {identifier}")
+    return 0
+
+
+def publishos_unlink(args: argparse.Namespace) -> int:
+    data = load_registry(args.registry)
+    validate_registry_for_write(data)
+    client = find_client(data, args.client)
+    integrations = client.get("integrations")
+    if not isinstance(integrations, dict) or "publishos" not in integrations:
+        print("PublishOS 映射未配置。")
+        return 0
+    del integrations["publishos"]
+    if not integrations:
+        del client["integrations"]
+    save_registry(args.registry, data)
+    print("已移除 PublishOS 映射；未删除客户或缓存。")
+    return 0
+
+
+def _manager_root(args: argparse.Namespace) -> Path:
+    return Path(args.manager_root).resolve() if getattr(args, "manager_root", None) else Path(__file__).resolve().parent
+
+
+def _publishos_status_data(args: argparse.Namespace) -> dict[str, Any]:
+    data = load_registry(args.registry)
+    clients = [client for client in data["clients"] if isinstance(client, dict)]
+    if args.client:
+        client = find_client(data, args.client)
+        return {"client_id": client.get("id"), "display_name": client.get("name"), "status": client.get("status"), "workspace": client.get("workspace"), "publishos_enabled": bool(_publishos_mapping(client)), "publishos_client_id": _publishos_mapping(client)}
+    config = load_config(_manager_root(args), profile=args.profile, config_path=args.config)
+    token = load_token(_manager_root(args), config.profile)
+    mappings = [_publishos_mapping(client) for client in clients if client.get("status") == "active"]
+    duplicates = len(mappings) != len({value.casefold() for value in mappings if value})
+    quarantine_dir = _manager_root(args) / ".ops-brain" / "quarantine" / "publishos"
+    return {"profile": config.profile, "base_url": config.base_url, "verify_tls": config.verify_tls, "timeout_seconds": config.timeout_seconds, "token_configured": token.value is not None, "token_source": token.source, "linked_active_clients": len([value for value in mappings if value]), "unlinked_active_clients": len([client for client in clients if client.get("status") == "active" and not _publishos_mapping(client)]), "duplicate_mapping": duplicates, "quarantine_count": len(list(quarantine_dir.glob("*.json"))) if quarantine_dir.is_dir() else 0}
+
+
+def publishos_status(args: argparse.Namespace) -> int:
+    payload = _publishos_status_data(args)
+    if getattr(args, "json_output", False):
+        emit_json({"ok": True, "code": "ok", "data": payload, "error": None})
+    else:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
+def publishos_sync(args: argparse.Namespace) -> int:
+    if args.content_ref and not args.client:
+        raise PublishOSError("configuration_error", "--content-ref requires --client")
+    data = load_registry(args.registry)
+    targets = [find_client(data, args.client)] if args.client else [client for client in data["clients"] if isinstance(client, dict) and client.get("status") == "active"]
+    results: list[dict[str, str]] = []
+    if args.dry_run:
+        for customer in targets:
+            refs = [args.content_ref] if args.content_ref else pending_content_refs(Path(customer["workspace"]))
+            for ref in refs:
+                result = "would_request"
+                if args.due and not is_due(Path(customer["workspace"]), ref, args.window_days):
+                    result = "not_due"
+                results.append({"client_id": customer["id"], "content_ref": ref, "result": result})
+        return _emit_publishos(args, results, 0)
+    config = load_config(_manager_root(args), profile=args.profile, config_path=args.config)
+    token = load_token(_manager_root(args), config.profile)
+    assert token.value is not None
+    client = PerformanceClient(config, token.value)
+    failures = 0
+    for customer in targets:
+        mapping = _publishos_mapping(customer)
+        refs = [args.content_ref] if args.content_ref else []
+        try:
+            if customer.get("status") != "active":
+                raise PublishOSError("archived_client", "archived customers are not synchronized")
+            if not mapping:
+                raise PublishOSError("not_linked", "customer has no PublishOS mapping")
+            if not refs:
+                refs = pending_content_refs(Path(customer["workspace"]))
+            for ref in refs:
+                if args.due and not is_due(Path(customer["workspace"]), ref, args.window_days):
+                    results.append({"client_id": customer["id"], "content_ref": ref, "result": "not_due"})
+                    continue
+                result = sync_one(workspace=Path(customer["workspace"]), manager_root=_manager_root(args), profile=config.profile, ops_client_id=customer["id"], publishos_client_id=mapping, content_ref=ref, days=args.days, client=client)
+                results.append({"client_id": customer["id"], "content_ref": ref, "result": result})
+        except PublishOSError as exc:
+            failures += 1
+            quarantine(_manager_root(args), profile=config.profile, client_id=customer.get("id", "unknown"), publishos_client_id=mapping, content_ref=refs[0] if refs else args.content_ref, reason=exc.code, message=str(exc), status=exc.status)
+            results.append({"client_id": customer.get("id", "unknown"), "content_ref": args.content_ref or "", "result": "quarantined"})
+    return _emit_publishos(args, results, 1 if failures else 0)
+
+
+def _emit_publishos(args: argparse.Namespace, results: list[dict[str, str]], status: int) -> int:
+    summary = {key: sum(item["result"] == key for item in results) for key in ("updated", "no_change", "not_due", "quarantined", "would_request")}
+    payload = {"ok": status == 0, "code": "ok" if status == 0 else "partial_failure", "data": {"profile": getattr(args, "profile", None) or "development", "results": results, "summary": summary}, "error": None}
+    if getattr(args, "json_output", False):
+        emit_json(payload)
+    else:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return status
+
+
 def _doctor_record(client: Any, index: int, seen_ids: set[str], seen_names: set[str]) -> tuple[list[str], list[str]]:
     prefix = f"client[{index}]"
     issues: list[str] = []
@@ -346,6 +491,11 @@ def _doctor_record(client: Any, index: int, seen_ids: set[str], seen_names: set[
         issues.append(f"{prefix}: workspace and upstream runtime have a containment relationship")
     if status == "archived":
         notices.append(f"{prefix}: archived workspace remains reserved: {workspace}")
+    integrations = client.get("integrations")
+    if integrations is not None:
+        publishos = integrations.get("publishos") if isinstance(integrations, dict) else None
+        if not isinstance(integrations, dict) or (publishos is not None and (not isinstance(publishos, dict) or not isinstance(publishos.get("enabled"), bool) or not isinstance(publishos.get("client_id"), str) or not publishos["client_id"].strip())):
+            issues.append(f"{prefix}: invalid PublishOS integration")
     return issues, notices
 
 
@@ -364,6 +514,16 @@ def doctor_report(registry_path: Path) -> tuple[int, dict[str, Any]]:
         record_issues, record_notices = _doctor_record(client, index, seen_ids, seen_names)
         issues.extend(record_issues)
         notices.extend(record_notices)
+    publishos_mappings: dict[str, int] = {}
+    for index, client in enumerate(data["clients"]):
+        if isinstance(client, dict) and client.get("status") == "active":
+            mapping = _publishos_mapping(client)
+            if mapping:
+                key = mapping.casefold()
+                if key in publishos_mappings:
+                    issues.append(f"client[{index}]: duplicate active PublishOS client id {mapping}")
+                else:
+                    publishos_mappings[key] = index
     valid_paths = [
         (index, client, canonical_path(client["workspace"]))
         for index, client in enumerate(data["clients"])
@@ -468,6 +628,36 @@ def parser() -> argparse.ArgumentParser:
     command.add_argument("--client", required=True)
     command.add_argument("--json", dest="json_output", action="store_true")
     command.set_defaults(handler=lambda args: 0)
+    publishos = commands.add_parser("publishos", help="只读 PublishOS 本地数据桥")
+    publishos_commands = publishos.add_subparsers(dest="publishos_command", required=True)
+    command = publishos_commands.add_parser("link")
+    command.add_argument("--client", required=True)
+    command.add_argument("--publishos-client-id", required=True)
+    command.set_defaults(handler=publishos_link)
+    command = publishos_commands.add_parser("unlink")
+    command.add_argument("--client", required=True)
+    command.set_defaults(handler=publishos_unlink)
+    command = publishos_commands.add_parser("status")
+    command.add_argument("--client")
+    command.add_argument("--profile")
+    command.add_argument("--config", type=Path)
+    command.add_argument("--manager-root", type=Path)
+    command.add_argument("--json", dest="json_output", action="store_true")
+    command.set_defaults(handler=publishos_status)
+    command = publishos_commands.add_parser("sync")
+    customer = command.add_mutually_exclusive_group(required=True)
+    customer.add_argument("--client")
+    customer.add_argument("--all", action="store_true")
+    command.add_argument("--content-ref")
+    command.add_argument("--profile")
+    command.add_argument("--config", type=Path)
+    command.add_argument("--manager-root", type=Path)
+    command.add_argument("--days", type=int, default=7, choices=range(1, 366))
+    command.add_argument("--window-days", type=int, default=3, choices=range(1, 366))
+    command.add_argument("--due", action="store_true")
+    command.add_argument("--dry-run", action="store_true")
+    command.add_argument("--json", dest="json_output", action="store_true")
+    command.set_defaults(handler=publishos_sync)
     return root
 
 
@@ -477,7 +667,10 @@ def main(argv: list[str] | None = None) -> int:
         return run_json_command(args)
     try:
         return args.handler(args)
-    except RegistryError as exc:
+    except (RegistryError, PublishOSError) as exc:
+        if getattr(args, "json_output", False):
+            code = exc.code if isinstance(exc, PublishOSError) else "registry_error"
+            emit_json({"ok": False, "code": code, "data": None, "error": str(exc)})
         print(f"错误：{exc}", file=sys.stderr)
         return 2
 

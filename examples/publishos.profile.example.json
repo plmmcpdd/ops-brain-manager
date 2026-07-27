@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "base_url": "https://publishos.example.com",
+  "timeout_seconds": 20,
+  "verify_tls": true
+}

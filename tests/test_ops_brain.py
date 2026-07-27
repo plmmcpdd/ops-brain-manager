@@ -11,6 +11,12 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import ops_brain
+from ops_brain_publishos.config import load_config, load_token
+from ops_brain_publishos.contract import validate_response
+from ops_brain_publishos.errors import PublishOSError
+from ops_brain_publishos.storage import write_normalized
+from ops_brain_publishos.report import write_report
+from ops_brain_publishos.sync import is_due, pending_content_refs
 
 
 class RegistryTests(unittest.TestCase):
@@ -316,6 +322,77 @@ class ExternalIntegrityTests(unittest.TestCase):
         for relative, expected in self.HASHES.items():
             actual = hashlib.sha256((self.HVAC / relative).read_bytes()).hexdigest()
             self.assertEqual(actual, expected, relative)
+
+
+class PublishOSBridgeTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.registry = self.root / "registry.json"
+        self.workspace = self.root / "workspace"
+        self.workspace.mkdir()
+        ops_brain.attach(SimpleNamespace(registry=self.registry, name="Test Client", workspace=str(self.workspace)))
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def _payload(self):
+        return {"schemaVersion": "publishos.ops-brain.performance.v1", "generatedAt": "2026-01-01T00:00:00Z", "clientId": "pub-test", "content": {"id": "content-id", "contentRef": "2026-01-01_test", "title": "Test", "status": "published"}, "collection": {"status": "success", "lastAttemptAt": None, "lastSuccessAt": None, "reauthorizationRequired": False, "errorCode": None, "errorMessage": None}, "latestTotals": {"views": 1, "likes": 2, "comments": 3, "shares": 4, "saves": None, "reach": None, "impressions": None, "engagementRate": 0.1}, "posts": [], "availability": {"views": "available"}, "unknown": "ignored"}
+
+    def test_link_unlink_and_duplicate_protection(self):
+        args = SimpleNamespace(registry=self.registry, client="Test Client", publishos_client_id="pub-test")
+        self.assertEqual(ops_brain.publishos_link(args), 0)
+        self.assertEqual(ops_brain._publishos_mapping(ops_brain.load_registry(self.registry)["clients"][0]), "pub-test")
+        second = self.root / "second"
+        second.mkdir()
+        ops_brain.attach(SimpleNamespace(registry=self.registry, name="Second", workspace=str(second)))
+        with self.assertRaises(ops_brain.RegistryError):
+            ops_brain.publishos_link(SimpleNamespace(registry=self.registry, client="Second", publishos_client_id="pub-test"))
+        self.assertEqual(ops_brain.publishos_unlink(SimpleNamespace(registry=self.registry, client="Test Client")), 0)
+        self.assertNotIn("integrations", ops_brain.load_registry(self.registry)["clients"][0])
+
+    def test_config_token_and_contract_redaction(self):
+        config_dir = self.root / ".ops-brain" / "integrations"
+        config_dir.mkdir(parents=True)
+        (config_dir / "publishos.development.json").write_text(json.dumps({"version": 1, "base_url": "http://127.0.0.1:4567/", "timeout_seconds": 20, "verify_tls": True}), encoding="utf-8")
+        self.assertEqual(load_config(self.root).base_url, "http://127.0.0.1:4567")
+        with patch.dict(os.environ, {"OPS_BRAIN_PUBLISHOS_TOKEN": "T" * 32}, clear=False):
+            token = load_token(self.root, "development")
+        self.assertEqual(token.source, "environment")
+        normalized = validate_response(self._payload(), "pub-test", "2026-01-01_test")
+        self.assertNotIn("unknown", normalized)
+        self.assertEqual(normalized["content"]["id"], "content-id")
+        bad = self._payload()
+        bad["latestTotals"]["views"] = True
+        with self.assertRaisesRegex(PublishOSError, "finite number"):
+            validate_response(bad, "pub-test", "2026-01-01_test")
+
+    def test_normalized_storage_is_idempotent(self):
+        normalized = validate_response(self._payload(), "pub-test", "2026-01-01_test")
+        digest, changed, latest = write_normalized(self.workspace, "2026-01-01_test", normalized)
+        self.assertTrue(changed)
+        mtime = latest.stat().st_mtime_ns
+        second, changed, latest = write_normalized(self.workspace, "2026-01-01_test", normalized)
+        self.assertEqual(digest, second)
+        self.assertFalse(changed)
+        self.assertEqual(mtime, latest.stat().st_mtime_ns)
+
+    def test_pending_due_and_managed_report_preservation(self):
+        predictions = self.workspace / "predictions"
+        video = self.workspace / "videos" / "2026-01-01_test"
+        predictions.mkdir()
+        video.mkdir(parents=True)
+        prediction = predictions / "2026-01-01_test.md"
+        prediction.write_text("Published at: 2026-01-01T00:00:00Z\n", encoding="utf-8")
+        (self.workspace / ".cheat-state.json").write_text(json.dumps({"pending_retros": ["predictions/2026-01-01_test.md"]}), encoding="utf-8")
+        self.assertEqual(pending_content_refs(self.workspace), ["2026-01-01_test"])
+        self.assertTrue(is_due(self.workspace, "2026-01-01_test", 3))
+        normalized = validate_response(self._payload(), "pub-test", "2026-01-01_test")
+        self.assertTrue(write_report(self.workspace, "2026-01-01_test", normalized))
+        report = video / "report.md"
+        report.write_text(report.read_text(encoding="utf-8") + "A manual note\n", encoding="utf-8")
+        self.assertTrue(write_report(self.workspace, "2026-01-01_test", normalized))
+        self.assertIn("A manual note", report.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

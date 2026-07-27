@@ -46,6 +46,12 @@ python3 ops_brain.py open --client client-a --app code
 
 `doctor` 完全只读。退出码为：`0` 无问题、`1` 发现问题、`2` 无法安全读取 Registry。旧 Registry 中没有 `origin` 的客户会被标为 `legacy`，只提示人工确认，不会擅自推断或改写。
 
+## PublishOS 本地数据桥
+
+Manager 仍不判断内容表现、不会修改 prediction 或 Rubric，也不会自动执行复盘。可选的 PublishOS bridge 只读取最小工作流元数据和云端只读 Performance API，并在客户工作区生成平台事实 `report.md` 与经过验证的标准化 JSON；这只是证据准备，不是运营复盘结论。
+
+详细配置、数据边界、dry-run 和退出码见 [`docs/PUBLISHOS-LOCAL-BRIDGE.md`](docs/PUBLISHOS-LOCAL-BRIDGE.md)。
+
 ## Windows（次要示例）
 
 在 PowerShell 中可使用：
