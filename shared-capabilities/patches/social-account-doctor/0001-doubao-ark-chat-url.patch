@@ -1,0 +1,64 @@
+From: Ops Brain local integration
+Subject: [PATCH] support Doubao Ark OpenAI-compatible chat endpoint
+
+Upstream: https://github.com/JuneYaooo/social-account-doctor
+Applies-to: 88bb251248ca05d7e17c5eed6a7d3885d938180e
+License: MIT (same as upstream)
+
+---
+ scripts/analyze_image.py         | 2 +-
+ scripts/analyze_video.py         | 2 +-
+ scripts/ocr_screenshot.py        | 2 +-
+ tests/test_multimodal_scripts.py | 18 ++++++++++++++++++
+ 4 files changed, 21 insertions(+), 3 deletions(-)
+
+diff --git a/scripts/analyze_image.py b/scripts/analyze_image.py
+--- a/scripts/analyze_image.py
++++ b/scripts/analyze_image.py
+@@ -146,5 +146,5 @@ def chat_completions_url(base_url: str) -> str:
+ def chat_completions_url(base_url: str) -> str:
+     base = base_url.rstrip("/")
+-    if base.endswith("/v1"):
++    if base.endswith(("/v1", "/api/v3")):
+         return f"{base}/chat/completions"
+     return f"{base}/v1/chat/completions"
+diff --git a/scripts/analyze_video.py b/scripts/analyze_video.py
+--- a/scripts/analyze_video.py
++++ b/scripts/analyze_video.py
+@@ -102,5 +102,5 @@ def chat_completions_url(base_url: str) -> str:
+ def chat_completions_url(base_url: str) -> str:
+     base = base_url.rstrip("/")
+-    if base.endswith("/v1"):
++    if base.endswith(("/v1", "/api/v3")):
+         return f"{base}/chat/completions"
+     return f"{base}/v1/chat/completions"
+diff --git a/scripts/ocr_screenshot.py b/scripts/ocr_screenshot.py
+--- a/scripts/ocr_screenshot.py
++++ b/scripts/ocr_screenshot.py
+@@ -107,5 +107,5 @@ def chat_completions_url(base_url: str) -> str:
+ def chat_completions_url(base_url: str) -> str:
+     base = base_url.rstrip("/")
+-    if base.endswith("/v1"):
++    if base.endswith(("/v1", "/api/v3")):
+         return f"{base}/chat/completions"
+     return f"{base}/v1/chat/completions"
+diff --git a/tests/test_multimodal_scripts.py b/tests/test_multimodal_scripts.py
+--- a/tests/test_multimodal_scripts.py
++++ b/tests/test_multimodal_scripts.py
+@@ -23,0 +24,16 @@
++def test_chat_completions_url_supports_openai_and_doubao_ark():
++    cases = {
++        "https://proxy.example.com/v1": "https://proxy.example.com/v1/chat/completions",
++        "https://proxy.example.com": "https://proxy.example.com/v1/chat/completions",
++        "https://ark.cn-beijing.volces.com/api/v3": (
++            "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
++        ),
++        "https://ark.cn-beijing.volces.com/api/v3/": (
++            "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
++        ),
++    }
++
++    for script_name in ("analyze_image", "analyze_video", "ocr_screenshot"):
++        module = load_script(script_name)
++        for base_url, expected in cases.items():
++            assert module.chat_completions_url(base_url) == expected

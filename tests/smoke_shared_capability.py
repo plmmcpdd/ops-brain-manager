@@ -8,8 +8,13 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 manifest = json.loads((ROOT / "shared-capabilities" / "manifest.json").read_text(encoding="utf-8"))
-skill = Path(manifest["capabilities"][0]["install_location"]).expanduser()
+capability = manifest["capabilities"][0]
+skill = Path(capability["install_location"]).expanduser()
 assert (skill / "SKILL.md").is_file()
+assert capability["pinned_commit"] == "88bb251248ca05d7e17c5eed6a7d3885d938180e"
+for local_patch in capability.get("local_patches", []):
+    assert local_patch["applies_to_commit"] == capability["pinned_commit"]
+    assert (ROOT / local_patch["path"]).is_file()
 
 with tempfile.TemporaryDirectory(prefix="ops-brain-social-doctor-") as temp:
     root = Path(temp)

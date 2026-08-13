@@ -10,6 +10,14 @@
       "source": "https://github.com/JuneYaooo/social-account-doctor.git",
       "pinned_commit": "88bb251248ca05d7e17c5eed6a7d3885d938180e",
       "license": "MIT",
+      "local_patches": [
+        {
+          "id": "doubao-ark-chat-url",
+          "path": "shared-capabilities/patches/social-account-doctor/0001-doubao-ark-chat-url.patch",
+          "applies_to_commit": "88bb251248ca05d7e17c5eed6a7d3885d938180e",
+          "description": "Add /api/v3 OpenAI-compatible chat endpoint support for Doubao Ark"
+        }
+      ],
       "executables": [
         {"id": "python3", "command": "python3"},
         {"id": "tikhub", "path": "~/.local/bin/tikhub"},
@@ -18,7 +26,7 @@
       ],
       "components": [
         {"id": "TikHub", "required": true, "config_keys": ["TIKHUB_API_KEY"], "executables": ["tikhub"]},
-        {"id": "Visual Analysis", "required": false, "config_keys": ["VIDEO_ANALYSIS_API_KEY", "VIDEO_ANALYSIS_BASE_URL"], "executables": []},
+        {"id": "Visual Analysis", "required": false, "config_keys": ["VIDEO_ANALYSIS_API_KEY", "VIDEO_ANALYSIS_BASE_URL", "VIDEO_ANALYSIS_MODEL_NAME"], "executables": []},
         {"id": "Audio Transcription", "required": false, "config_keys": ["AUDIO_TRANSCRIPTION_API_KEY"], "executables": []},
         {"id": "Video Processing", "required": false, "config_keys": [], "executables": ["ffmpeg", "ffprobe"]}
       ]
