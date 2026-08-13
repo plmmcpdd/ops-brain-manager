@@ -391,6 +391,61 @@ class RegistryTests(unittest.TestCase):
         self.assertIn("已挂接 Text Attach", attach_output.getvalue())
         self.assertEqual(len(ops_brain.load_registry(self.registry)["clients"]), 2)
 
+    def test_unicode_client_identity_works_across_manager_read_contracts(self):
+        workspace = self.root / "小红书一号测试客户"
+        create_output = io.StringIO()
+        with redirect_stdout(create_output):
+            self.assertEqual(ops_brain.main(["--registry", str(self.registry), "create", "--name", "小红书一号测试客户", "--workspace", str(workspace), "--json"]), 0)
+        created = json.loads(create_output.getvalue())["data"]
+        self.assertEqual(created["client_id"], "小红书一号测试客户")
+        self.assertEqual(created["display_name"], "小红书一号测试客户")
+        for arguments in (
+            ["list", "--all", "--json"],
+            ["show", "--client", "小红书一号测试客户", "--json"],
+            ["resolve-launch", "--client", "小红书一号测试客户", "--json"],
+            ["doctor", "--json"],
+        ):
+            output = io.StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(ops_brain.main(["--registry", str(self.registry), *arguments]), 0)
+            payload = json.loads(output.getvalue())
+            self.assertTrue(payload["ok"], arguments)
+        self.assertEqual(len(ops_brain.load_registry(self.registry)["clients"]), 1)
+
+    def test_client_id_contract_accepts_unicode_words_and_rejects_unsafe_segments(self):
+        expected = {
+            "ABC": "abc",
+            "123": "123",
+            "client_01": "client_01",
+            "客户-01": "客户-01",
+            "美国移民项目": "美国移民项目",
+            "a b": "a-b",
+            "a/b": "a-b",
+            "a\\b": "a-b",
+            "a.b": "a-b",
+            "a😀b": "a-b",
+            "a\nb": "a-b",
+        }
+        for source, identifier in expected.items():
+            self.assertEqual(ops_brain.client_id(source), identifier)
+            self.assertTrue(ops_brain.is_safe_client_id(identifier))
+        for unsafe in ("", ".", "..", "../escape", "a/b", "a\\b", "a\nb", "a\rb", "a\x01b", "-leading", "trailing-", "_leading", "trailing_", "😀", "con", "NUL", "com1", "lpt9"):
+            self.assertFalse(ops_brain.is_safe_client_id(unsafe), repr(unsafe))
+
+    def test_doctor_and_write_validation_reject_unsafe_stored_client_id(self):
+        workspace = self.root / "unsafe"
+        workspace.mkdir()
+        payload = {"version": 1, "clients": [{"id": "../escape", "name": "Unsafe", "workspace": str(workspace), "status": "active", "origin": "created"}]}
+        self.registry.write_text(json.dumps(payload), encoding="utf-8")
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(ops_brain.main(["--registry", str(self.registry), "doctor", "--json"]), 1)
+        report = json.loads(output.getvalue())
+        self.assertFalse(report["ok"])
+        self.assertTrue(any("safe single path segment" in finding for finding in report["data"]["findings"]))
+        with self.assertRaisesRegex(ops_brain.RegistryError, "安全的单一路径段"):
+            ops_brain.validate_registry_for_write(ops_brain.load_registry(self.registry))
+
 
 class ExternalIntegrityTests(unittest.TestCase):
     UPSTREAM = Path("/home/rong/tools/cheat-on-content")

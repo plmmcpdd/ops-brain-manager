@@ -114,7 +114,17 @@ function Convert-WindowsPathToWsl {
 function Get-ProjectionRoot {
     param([Parameter(Mandatory=$true)][string]$Root, [Parameter(Mandatory=$true)]$Client)
     $folder = if ($Client.status -eq 'archived') { '已归档客户' } else { '客户' }
-    return (Join-Path (Join-Path $Root $folder) $Client.client_id)
+    $clientId = [string]$Client.client_id
+    if ([string]::IsNullOrWhiteSpace($clientId) -or $clientId -in @('.', '..') -or $clientId.IndexOfAny([System.IO.Path]::GetInvalidFileNameChars()) -ge 0) {
+        throw "Unsafe client_id for Windows projection: $clientId"
+    }
+    foreach ($character in $clientId.ToCharArray()) { if ([char]::IsControl($character)) { throw "Unsafe client_id for Windows projection" } }
+    if ($clientId -match '^(?i:con|prn|aux|nul|com[1-9]|lpt[1-9])$') { throw "Reserved client_id for Windows projection: $clientId" }
+    $parent = [System.IO.Path]::GetFullPath((Join-Path $Root $folder))
+    $projection = [System.IO.Path]::GetFullPath((Join-Path $parent $clientId))
+    $prefix = $parent.TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
+    if (-not $projection.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) { throw "Client projection escapes its root" }
+    return $projection
 }
 
 function New-OpsProjection {

@@ -63,6 +63,22 @@ exit 0
         $module = Get-Content -LiteralPath (Join-Path $sourceRoot 'launcher\OpsBrainLauncher.psm1') -Raw -Encoding UTF8
         $module | Should -Not -Match 'bash\s+-lc'
     }
+    It 'accepts Unicode projection IDs and rejects unsafe or escaping segments' {
+        $sourceRoot = $env:OPS_BRAIN_LAUNCHER_SOURCE
+        if (-not $sourceRoot) { throw 'OPS_BRAIN_LAUNCHER_SOURCE must point to windows-entry.' }
+        $temp = Join-Path $env:TEMP ('ops-brain-projection-id-' + [guid]::NewGuid().ToString())
+        try {
+            Import-Module (Join-Path $sourceRoot 'launcher\OpsBrainLauncher.psm1') -Force
+            foreach ($clientId in @('ascii-client','client_01','小红书一号测试客户','美国移民-01')) {
+                $client = [pscustomobject]@{ client_id=$clientId; display_name=$clientId; workspace='/tmp/workspace'; status='active'; origin='created' }
+                Get-ProjectionRoot -Root $temp -Client $client | Should -Be (Join-Path $temp ('客户\' + $clientId))
+            }
+            foreach ($clientId in @('', '.', '..', '../escape', 'a/b', 'a\b', "a`nb", "a`rb", ([string][char]1), 'con', 'NUL')) {
+                $client = [pscustomobject]@{ client_id=$clientId; display_name='Unsafe'; workspace='/tmp/workspace'; status='active'; origin='created' }
+                { Get-ProjectionRoot -Root $temp -Client $client } | Should -Throw
+            }
+        } finally { if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Recurse -Force } }
+    }
     It 'uses the required Remote WSL and absolute path workspace contract' {
         $sourceRoot = $env:OPS_BRAIN_LAUNCHER_SOURCE
         if (-not $sourceRoot) { throw 'OPS_BRAIN_LAUNCHER_SOURCE must point to windows-entry.' }

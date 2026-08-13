@@ -24,6 +24,11 @@ DEFAULT_REGISTRY = Path(__file__).resolve().parent / ".ops-brain" / "clients.jso
 UPSTREAM_RUNTIME = Path("/home/rong/tools/cheat-on-content")
 VALID_STATUSES = {"active", "archived"}
 VALID_ORIGINS = {"created", "attached"}
+WINDOWS_RESERVED_SEGMENTS = {
+    "con", "prn", "aux", "nul",
+    *(f"com{number}" for number in range(1, 10)),
+    *(f"lpt{number}" for number in range(1, 10)),
+}
 
 
 class RegistryError(RuntimeError):
@@ -51,7 +56,19 @@ def client_id(name: str) -> str:
     value = re.sub(r"[^\w]+", "-", name.strip().casefold(), flags=re.UNICODE).strip("-_")
     if not value:
         raise RegistryError("客户名称必须包含字母或数字，才能生成稳定 ID。")
+    if not is_safe_client_id(value):
+        raise RegistryError("客户名称无法生成安全的客户 ID。")
     return value
+
+
+def is_safe_client_id(value: str) -> bool:
+    """True for Manager IDs that are safe as one cross-layer filesystem segment."""
+    return (
+        bool(re.fullmatch(r"[\w-]+", value, flags=re.UNICODE))
+        and value[0] not in "-_"
+        and value[-1] not in "-_"
+        and value.casefold() not in WINDOWS_RESERVED_SEGMENTS
+    )
 
 
 def new_registry() -> dict[str, Any]:
@@ -143,6 +160,8 @@ def validate_registry_for_write(data: dict[str, Any]) -> None:
             for field in ("id", "name", "workspace", "status")
         ):
             raise RegistryError(f"登记册 client[{index}] 不完整；请先运行 doctor 检查。")
+        if not is_safe_client_id(client["id"]):
+            raise RegistryError(f"登记册 client[{index}] 客户 ID 不是安全的单一路径段；请先运行 doctor 检查。")
         if client["status"] not in VALID_STATUSES:
             raise RegistryError(f"登记册 client[{index}] 状态无效；请先运行 doctor 检查。")
         if "origin" in client and client["origin"] not in VALID_ORIGINS:
@@ -473,6 +492,8 @@ def _doctor_record(client: Any, index: int, seen_ids: set[str], seen_names: set[
     if issues:
         return issues, notices
     identifier, name, workspace, status = client["id"], client["name"], client["workspace"], client["status"]
+    if not is_safe_client_id(identifier):
+        issues.append(f"{prefix}: client id is not a safe single path segment: {identifier!r}")
     if identifier.casefold() in seen_ids:
         issues.append(f"{prefix}: duplicate client id {identifier}")
     seen_ids.add(identifier.casefold())
