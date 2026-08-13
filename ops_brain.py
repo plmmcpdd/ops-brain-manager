@@ -182,7 +182,7 @@ def add_client(data: dict[str, Any], name: str, workspace: str, origin: str) -> 
     return record
 
 
-def attach(args: argparse.Namespace) -> int:
+def attach_client(args: argparse.Namespace) -> dict[str, Any]:
     data = load_registry(args.registry)
     validate_registry_for_write(data)
     path = Path(args.workspace)
@@ -190,6 +190,11 @@ def attach(args: argparse.Namespace) -> int:
         raise RegistryError("挂接目标必须是一个已存在的工作区目录。")
     record = add_client(data, args.name, args.workspace, "attached")
     save_registry(args.registry, data)
+    return record
+
+
+def attach(args: argparse.Namespace) -> int:
+    record = attach_client(args)
     print(f"已挂接 {record['name']}：{record['workspace']}")
     return 0
 
@@ -211,7 +216,7 @@ def _create_failure(created_directory: bool, target: Path, error: Exception) -> 
     )
 
 
-def create(args: argparse.Namespace) -> int:
+def create_client(args: argparse.Namespace) -> tuple[dict[str, Any], bool]:
     data = load_registry(args.registry)
     validate_registry_for_write(data)
     workspace = args.workspace or str(Path(args.workspace_root) / client_id(args.name))
@@ -230,6 +235,11 @@ def create(args: argparse.Namespace) -> int:
         save_registry(args.registry, data)
     except Exception as exc:
         raise _create_failure(created_directory, target, exc) from exc
+    return record, created_directory
+
+
+def create(args: argparse.Namespace) -> int:
+    record, created_directory = create_client(args)
     print(
         f"已创建并登记 {record['name']}：{record['workspace']} "
         f"(directory_created={'yes' if created_directory else 'no'}; registry_committed=yes)"
@@ -566,6 +576,14 @@ def emit_json(payload: dict[str, Any]) -> None:
 
 def run_json_command(args: argparse.Namespace) -> int:
     try:
+        if args.command == "create":
+            record, _ = create_client(args)
+            emit_json({"ok": True, "code": "ok", "data": json_client(record), "error": None})
+            return 0
+        if args.command == "attach":
+            record = attach_client(args)
+            emit_json({"ok": True, "code": "ok", "data": json_client(record), "error": None})
+            return 0
         if args.command == "list":
             clients = load_registry(args.registry)["clients"]
             if not args.all:
@@ -604,6 +622,7 @@ def parser() -> argparse.ArgumentParser:
         workspace_group.add_argument("--workspace")
         if name == "create":
             workspace_group.add_argument("--workspace-root")
+        command.add_argument("--json", dest="json_output", action="store_true")
         command.set_defaults(handler=handler)
     command = commands.add_parser("list")
     command.add_argument("--all", action="store_true")

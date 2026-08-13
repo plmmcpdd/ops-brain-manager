@@ -305,6 +305,92 @@ class RegistryTests(unittest.TestCase):
         self.assertFalse(json.loads(output.getvalue())["ok"])
         self.assertNotEqual(errors.getvalue(), "")
 
+    def test_create_json_creates_once_and_emits_one_pure_object(self):
+        workspace = self.root / "json-created"
+        output, errors = io.StringIO(), io.StringIO()
+        with patch("ops_brain.save_registry", wraps=ops_brain.save_registry) as save, redirect_stdout(output), patch("sys.stderr", errors):
+            exit_code = ops_brain.main(["--registry", str(self.registry), "create", "--name", "JSON Client", "--workspace", str(workspace), "--json"])
+        self.assertEqual(exit_code, 0)
+        save.assert_called_once()
+        raw = output.getvalue()
+        self.assertEqual(len(raw.splitlines()), 1)
+        payload = json.loads(raw)
+        self.assertEqual(payload, {"ok": True, "code": "ok", "data": {"client_id": "json-client", "display_name": "JSON Client", "workspace": ops_brain.canonical_path(workspace), "status": "active", "origin": "created"}, "error": None})
+        self.assertEqual(errors.getvalue(), "")
+        self.assertTrue(workspace.is_dir())
+        self.assertEqual(len(ops_brain.load_registry(self.registry)["clients"]), 1)
+        self.assertNotIn("已创建", raw)
+        self.assertNotIn("directory_created", raw)
+
+    def test_attach_json_commits_once_and_emits_one_pure_object(self):
+        workspace = self.root / "json-attached"
+        workspace.mkdir()
+        output, errors = io.StringIO(), io.StringIO()
+        with patch("ops_brain.save_registry", wraps=ops_brain.save_registry) as save, redirect_stdout(output), patch("sys.stderr", errors):
+            exit_code = ops_brain.main(["--registry", str(self.registry), "attach", "--name", "Attached Client", "--workspace", str(workspace), "--json"])
+        self.assertEqual(exit_code, 0)
+        save.assert_called_once()
+        raw = output.getvalue()
+        self.assertEqual(len(raw.splitlines()), 1)
+        payload = json.loads(raw)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["data"]["origin"], "attached")
+        self.assertEqual(payload["data"]["workspace"], ops_brain.canonical_path(workspace))
+        self.assertEqual(errors.getvalue(), "")
+        self.assertEqual(len(ops_brain.load_registry(self.registry)["clients"]), 1)
+        self.assertNotIn("已挂接", raw)
+
+    def test_duplicate_create_json_is_valid_error_without_second_mutation(self):
+        first = self.root / "first"
+        second = self.root / "second"
+        self.assertEqual(ops_brain.main(["--registry", str(self.registry), "create", "--name", "Duplicate", "--workspace", str(first), "--json"]), 0)
+        before = self.registry.read_bytes()
+        output, errors = io.StringIO(), io.StringIO()
+        with redirect_stdout(output), patch("sys.stderr", errors):
+            exit_code = ops_brain.main(["--registry", str(self.registry), "create", "--name", "Duplicate", "--workspace", str(second), "--json"])
+        self.assertNotEqual(exit_code, 0)
+        payload = json.loads(output.getvalue())
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["code"], "registry_error")
+        self.assertIsNone(payload["data"])
+        self.assertTrue(payload["error"])
+        self.assertEqual(before, self.registry.read_bytes())
+        self.assertFalse(second.exists())
+        self.assertEqual(len(ops_brain.load_registry(self.registry)["clients"]), 1)
+        self.assertNotEqual(errors.getvalue(), "")
+
+    def test_attach_conflict_json_is_valid_error_without_mutation(self):
+        workspace = self.root / "attached"
+        workspace.mkdir()
+        self.assertEqual(ops_brain.main(["--registry", str(self.registry), "attach", "--name", "First", "--workspace", str(workspace), "--json"]), 0)
+        before = self.registry.read_bytes()
+        output, errors = io.StringIO(), io.StringIO()
+        with redirect_stdout(output), patch("sys.stderr", errors):
+            exit_code = ops_brain.main(["--registry", str(self.registry), "attach", "--name", "Second", "--workspace", str(workspace), "--json"])
+        self.assertNotEqual(exit_code, 0)
+        payload = json.loads(output.getvalue())
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["code"], "registry_error")
+        self.assertIsNone(payload["data"])
+        self.assertEqual(before, self.registry.read_bytes())
+        self.assertEqual(len(ops_brain.load_registry(self.registry)["clients"]), 1)
+        self.assertNotEqual(errors.getvalue(), "")
+
+    def test_create_and_attach_text_mode_remain_human_readable(self):
+        created = self.root / "text-created"
+        attached = self.root / "text-attached"
+        attached.mkdir()
+        create_output = io.StringIO()
+        with redirect_stdout(create_output):
+            self.assertEqual(ops_brain.main(["--registry", str(self.registry), "create", "--name", "Text Create", "--workspace", str(created)]), 0)
+        self.assertIn("已创建并登记 Text Create", create_output.getvalue())
+        self.assertIn("directory_created=yes; registry_committed=yes", create_output.getvalue())
+        attach_output = io.StringIO()
+        with redirect_stdout(attach_output):
+            self.assertEqual(ops_brain.main(["--registry", str(self.registry), "attach", "--name", "Text Attach", "--workspace", str(attached)]), 0)
+        self.assertIn("已挂接 Text Attach", attach_output.getvalue())
+        self.assertEqual(len(ops_brain.load_registry(self.registry)["clients"]), 2)
+
 
 class ExternalIntegrityTests(unittest.TestCase):
     UPSTREAM = Path("/home/rong/tools/cheat-on-content")

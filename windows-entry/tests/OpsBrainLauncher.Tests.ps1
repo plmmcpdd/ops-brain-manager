@@ -1,4 +1,62 @@
 ﻿Describe 'Ops Brain Windows launcher source' {
+    It 'uses explicit JSON mode for create and attach before canonical show and projection' {
+        $sourceRoot = $env:OPS_BRAIN_LAUNCHER_SOURCE
+        if (-not $sourceRoot) { throw 'OPS_BRAIN_LAUNCHER_SOURCE must point to windows-entry.' }
+        $entry = Get-Content -LiteralPath (Join-Path $sourceRoot 'templates\new_ops_client_entry.ps1') -Raw -Encoding UTF8
+        $entry | Should -Match "@\('create',[^\r\n]+?'--json'\)"
+        $entry | Should -Match "@\('attach',[^\r\n]+?'--json'\)"
+        $entry | Should -Match '@\(''show'', ''--client'', \$name, ''--json''\)'
+        $entry | Should -Match 'New-OpsProjection -Root \$root -Client \$show\.Payload\.data'
+    }
+    It 'parses successful create JSON without the invalid JSON regression' {
+        $sourceRoot = $env:OPS_BRAIN_LAUNCHER_SOURCE
+        if (-not $sourceRoot) { throw 'OPS_BRAIN_LAUNCHER_SOURCE must point to windows-entry.' }
+        $temp = Join-Path $env:TEMP ('ops-brain-create-json-' + [guid]::NewGuid().ToString())
+        try {
+            New-Item -ItemType Directory -Path $temp -Force | Out-Null
+            $shim = Join-Path $temp 'manager-json-shim.ps1'
+            $shimText = "param()`r`nWrite-Output '{`"ok`":true,`"code`":`"ok`",`"data`":{`"client_id`":`"regression`",`"display_name`":`"Regression`",`"workspace`":`"/tmp/regression`",`"status`":`"active`",`"origin`":`"created`"},`"error`":null}'`r`nexit 0`r`n"
+            [System.IO.File]::WriteAllText($shim, $shimText, (New-Object System.Text.UTF8Encoding($false)))
+            Import-Module (Join-Path $sourceRoot 'launcher\OpsBrainLauncher.psm1') -Force
+            $runtime = [pscustomobject]@{ wsl_distribution='Ubuntu-E'; manager_wsl_path='/tmp/manager' }
+            $result = Invoke-OpsManagerJson -Runtime $runtime -ManagerArguments @('create','--name','Regression','--workspace','/tmp/regression','--json') -WslCommand $shim
+            $result.ExitCode | Should -Be 0
+            $result.Payload.ok | Should -BeTrue
+            $result.Payload.data.origin | Should -Be 'created'
+        } catch {
+            $_.Exception.Message | Should -Not -Match 'Manager returned invalid JSON \(exit 0\)'
+            throw
+        } finally { if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Recurse -Force } }
+    }
+    It 'executes mocked create and attach JSON through canonical show and projection' {
+        $sourceRoot = $env:OPS_BRAIN_LAUNCHER_SOURCE
+        if (-not $sourceRoot) { throw 'OPS_BRAIN_LAUNCHER_SOURCE must point to windows-entry.' }
+        $temp = Join-Path $env:TEMP ('ops-brain-new-client-flow-' + [guid]::NewGuid().ToString())
+        try {
+            New-Item -ItemType Directory -Path $temp -Force | Out-Null
+            $shim = Join-Path $temp 'manager-flow-shim.ps1'
+            $shimText = @'
+$command = @($args | Where-Object { $_ -in @('create','attach','show') } | Select-Object -First 1)
+$origin = if ($command -eq 'attach') { 'attached' } else { 'created' }
+Write-Output ('{"ok":true,"code":"ok","data":{"client_id":"flow-client","display_name":"Flow Client","workspace":"/tmp/flow-client","status":"active","origin":"' + $origin + '"},"error":null}')
+exit 0
+'@
+            [System.IO.File]::WriteAllText($shim, $shimText, (New-Object System.Text.UTF8Encoding($false)))
+            Import-Module (Join-Path $sourceRoot 'launcher\OpsBrainLauncher.psm1') -Force
+            $runtime = [pscustomobject]@{ wsl_distribution='Ubuntu-E'; manager_wsl_path='/tmp/manager' }
+            $created = Invoke-OpsManagerJson -Runtime $runtime -ManagerArguments @('create','--name','Flow Client','--workspace','/tmp/flow-client','--json') -WslCommand $shim
+            $created.Payload.ok | Should -BeTrue
+            $created.Payload.data.origin | Should -Be 'created'
+            $attached = Invoke-OpsManagerJson -Runtime $runtime -ManagerArguments @('attach','--name','Flow Client','--workspace','/tmp/flow-client','--json') -WslCommand $shim
+            $attached.Payload.ok | Should -BeTrue
+            $attached.Payload.data.origin | Should -Be 'attached'
+            $show = Invoke-OpsManagerJson -Runtime $runtime -ManagerArguments @('show','--client','Flow Client','--json') -WslCommand $shim
+            $projection = New-OpsProjection -Root $temp -Client $show.Payload.data
+            $projection | Should -Be (Join-Path $temp '客户\flow-client')
+            Test-Path -LiteralPath (Join-Path $projection '客户信息.json') | Should -BeTrue
+            Test-Path -LiteralPath (Join-Path $projection '打开运营大脑.cmd') | Should -BeTrue
+        } finally { if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Recurse -Force } }
+    }
     It 'contains no bash -lc command construction' {
         $sourceRoot = $env:OPS_BRAIN_LAUNCHER_SOURCE
         if (-not $sourceRoot) { throw 'OPS_BRAIN_LAUNCHER_SOURCE must point to windows-entry.' }
