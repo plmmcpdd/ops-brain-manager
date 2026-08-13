@@ -1,0 +1,429 @@
+diff --git a/.env.example b/.env.example
+index 9c247c4..58e8432 100644
+--- a/.env.example
++++ b/.env.example
+@@ -8,6 +8,12 @@ VIDEO_ANALYSIS_MODEL_NAME=gemini-3-pro
+ # Optional multimodal controls
+ VIDEO_ANALYSIS_TIMEOUT_SECONDS=600
+ VIDEO_ANALYSIS_NORMALIZE_IMAGES=1
++# Batch cover analysis concurrency (Ops Brain recommends 3)
++VIDEO_ANALYSIS_CONCURRENCY=3
++# Optional OpenAI-compatible thinking control; omit for providers that do not support it
++VIDEO_ANALYSIS_THINKING=disabled
++# Cover extraction response budgets, with a single retry at the second budget
++VIDEO_ANALYSIS_TOKEN_BUDGETS=2000,4000
+ # unset/1 = use video_url when a local video segment is available; 0 = representative-frame fallback
+ # VIDEO_ANALYSIS_USE_VIDEO_URL=0
+ 
+diff --git a/SKILL.md b/SKILL.md
+index f3b2194..c9ea9ff 100644
+--- a/SKILL.md
++++ b/SKILL.md
+@@ -617,7 +617,7 @@ B 站是 16:9 横屏 + 长视频文化，**算法核心信号是三连率（点
+ 平台细节（阈值、6 维评分细则）在 `references/platforms/{平台}.md`，**find/crack/adapt 主流程不用看**，L2 诊断时才读。
+ 
+ ### 多模态脚本（scripts/）
+-- `analyze_image.py <封面1> [封面2 ...] [--concurrency 1] [--timeout 600]`：拿 5 变量 + 5 模板归类 + 钩子识别；支持多图批量，默认串行，确认额度充足时再手动调高并发
++- `analyze_image.py <封面1> [封面2 ...] [--concurrency N] [--timeout 600]`：拿 5 变量 + 5 模板归类 + 钩子识别；多个封面必须一次 batch invocation，禁止 shell `for` 逐张调用；默认并发读取 `VIDEO_ANALYSIS_CONCURRENCY`（Ops Brain 推荐 3），结果顺序与输入一致
+ - `analyze_video.py <视频> [--mode auto/talking/visual/keyframe]`：三模式自动路由；visual/talking 默认按视频配置走，本地片段存在且未禁用时发 video_url；设 `VIDEO_ANALYSIS_USE_VIDEO_URL=0` 或没有可用视频片段时才走代表帧兜底
+ - `analyze_document.py <文档> [--json]`：compose 用，吃 `.md` / `.txt` / `.pdf` → 全文 + 章节 + 候选金句 + 字数；PDF 依赖 pdfplumber / pypdf / fitz / pdftotext 任一（四选一，都没有时会提示装）
+ - `ocr_screenshot.py <截图>`：用户给后台数据截图时用；非 JPEG 默认转 JPEG，可用 `VIDEO_ANALYSIS_NORMALIZE_IMAGES=0` 关闭
+diff --git a/scripts/analyze_image.py b/scripts/analyze_image.py
+index 580fa50..a16c632 100644
+--- a/scripts/analyze_image.py
++++ b/scripts/analyze_image.py
+@@ -41,6 +41,7 @@ SYSTEM_PROMPT = """你是一名小红书 / 抖音 / 快手 爆款拆解分析师
+ """
+ 
+ DEFAULT_ANALYSIS_TIMEOUT_SECONDS = 600
++DEFAULT_TOKEN_BUDGETS = [8000, 16000]
+ 
+ USER_PROMPT = """请按以下 JSON schema 拆解这张封面图，输出严格 JSON（不要任何 markdown 代码块标记）：
+ 
+@@ -143,6 +144,27 @@ def analysis_timeout_seconds(override: Optional[int] = None) -> int:
+     return _env_int("VIDEO_ANALYSIS_TIMEOUT_SECONDS", DEFAULT_ANALYSIS_TIMEOUT_SECONDS)
+ 
+ 
++def analysis_concurrency() -> int:
++    return _env_int("VIDEO_ANALYSIS_CONCURRENCY", 1)
++
++
++def analysis_token_budgets() -> list[int]:
++    raw = os.environ.get("VIDEO_ANALYSIS_TOKEN_BUDGETS")
++    if not raw:
++        return DEFAULT_TOKEN_BUDGETS.copy()
++    try:
++        budgets = [max(1, int(value.strip())) for value in raw.split(",") if value.strip()]
++    except ValueError:
++        return DEFAULT_TOKEN_BUDGETS.copy()
++    return budgets or DEFAULT_TOKEN_BUDGETS.copy()
++
++
++def apply_optional_thinking(payload: dict) -> None:
++    thinking = os.environ.get("VIDEO_ANALYSIS_THINKING", "").strip()
++    if thinking:
++        payload["thinking"] = {"type": thinking}
++
++
+ def chat_completions_url(base_url: str) -> str:
+     base = base_url.rstrip("/")
+     if base.endswith(("/v1", "/api/v3")):
+@@ -178,11 +200,13 @@ def _call_once(
+         "temperature": 0.2,
+         "max_tokens": max_tokens,
+     }
++    apply_optional_thinking(payload)
+     headers = {
+         "Authorization": f"Bearer {api_key}",
+         "Content-Type": "application/json",
+     }
+     try:
++        ark_start = time.perf_counter()
+         r = requests.post(
+             chat_completions_url(base_url),
+             headers=headers,
+@@ -190,12 +214,21 @@ def _call_once(
+             timeout=timeout_seconds,
+         )
+         r.raise_for_status()
++        ark_seconds = time.perf_counter() - ark_start
+         data = r.json()
+         choice = data["choices"][0]
+         content = (choice.get("message", {}).get("content") or "").strip()
+         finish_reason = choice.get("finish_reason", "")
+         _progress(f"done, finish_reason={finish_reason}, content_len={len(content)}")
+-        return {"ok": True, "content": content, "finish_reason": finish_reason}
++        usage = data.get("usage") or {}
++        output_tokens = usage.get("completion_tokens", usage.get("output_tokens"))
++        return {
++            "ok": True,
++            "content": content,
++            "finish_reason": finish_reason,
++            "ark_seconds": ark_seconds,
++            "output_tokens": output_tokens,
++        }
+     except requests.HTTPError as e:
+         return {
+             "ok": False,
+@@ -216,6 +249,7 @@ def _parse_json(content: str) -> dict:
+ 
+ 
+ def analyze(image_path: str, timeout_seconds: Optional[int] = None) -> dict:
++    total_start = time.perf_counter()
+     api_key = os.environ.get("VIDEO_ANALYSIS_API_KEY")
+     base_url = os.environ.get("VIDEO_ANALYSIS_BASE_URL", "https://daydream88.fun/v1")
+     model = os.environ.get("VIDEO_ANALYSIS_MODEL_NAME", "gemini-3.1-pro-preview")
+@@ -227,14 +261,21 @@ def analyze(image_path: str, timeout_seconds: Optional[int] = None) -> dict:
+     if not Path(image_path).exists():
+         return {"error": f"image not found: {image_path}"}
+ 
++    prepare_start = time.perf_counter()
+     b64, mime = prepare_image_payload(image_path)
+-    budgets = [8000, 16000]
++    prepare_seconds = time.perf_counter() - prepare_start
++    budgets = analysis_token_budgets()
+     last_content = ""
+     last_finish = ""
+     last_error = None
++    ark_seconds = 0.0
++    retry_count = 0
++    output_tokens = None
+ 
+     for max_tokens in budgets:
+         resp = _call_once(api_key, base_url, model, b64, mime, max_tokens, timeout_seconds)
++        ark_seconds += resp.get("ark_seconds", 0.0)
++        output_tokens = resp.get("output_tokens", output_tokens)
+         if not resp["ok"]:
+             last_error = {"error": resp.get("error"), "detail": resp.get("detail")}
+             break
+@@ -242,15 +283,39 @@ def analyze(image_path: str, timeout_seconds: Optional[int] = None) -> dict:
+         last_content = resp["content"]
+         last_finish = resp["finish_reason"]
+         if last_finish == "length":
++            retry_count += 1
+             continue
+ 
++        parse_start = time.perf_counter()
+         try:
+-            return _parse_json(last_content)
++            parsed = _parse_json(last_content)
++            parse_seconds = time.perf_counter() - parse_start
++            total_seconds = time.perf_counter() - total_start
++            _progress(
++                f"[visual] {Path(image_path).name} prepare={prepare_seconds * 1000:.0f}ms "
++                f"ark={ark_seconds:.2f}s parse={parse_seconds * 1000:.0f}ms "
++                f"retry={retry_count} total={total_seconds:.2f}s "
++                f"output_tokens={output_tokens if output_tokens is not None else 'unknown'}"
++            )
++            return parsed
+         except json.JSONDecodeError:
++            retry_count += 1
+             continue
+ 
+     if last_error:
++        _progress(
++            f"[visual] {Path(image_path).name} prepare={prepare_seconds * 1000:.0f}ms "
++            f"ark={ark_seconds:.2f}s parse=0ms retry={retry_count} "
++            f"total={time.perf_counter() - total_start:.2f}s output_tokens="
++            f"{output_tokens if output_tokens is not None else 'unknown'} error=yes"
++        )
+         return last_error
++    _progress(
++        f"[visual] {Path(image_path).name} prepare={prepare_seconds * 1000:.0f}ms "
++        f"ark={ark_seconds:.2f}s parse=failed retry={retry_count} "
++        f"total={time.perf_counter() - total_start:.2f}s output_tokens="
++        f"{output_tokens if output_tokens is not None else 'unknown'} error=json"
++    )
+     return {
+         "error": "model output could not be parsed as JSON",
+         "finish_reason": last_finish,
+@@ -261,8 +326,8 @@ def analyze(image_path: str, timeout_seconds: Optional[int] = None) -> dict:
+ def main():
+     p = argparse.ArgumentParser()
+     p.add_argument("image_paths", nargs="+", help="本地图片路径（支持多张）")
+-    p.add_argument("--concurrency", type=int, default=1,
+-                   help="并发数（默认 1，确认额度充足时再手动调高）")
++    p.add_argument("--concurrency", type=int, default=None,
++                   help="并发数（默认读取 VIDEO_ANALYSIS_CONCURRENCY，未配置时为 1）")
+     p.add_argument("--timeout", type=int, default=None,
+                    help="单次模型调用读超时秒数")
+     args = p.parse_args()
+@@ -273,7 +338,7 @@ def main():
+         print(json.dumps(result, ensure_ascii=False, indent=2))
+         return
+ 
+-    concurrency = max(1, args.concurrency)
++    concurrency = max(1, args.concurrency if args.concurrency is not None else analysis_concurrency())
+     _progress(f"batch mode: {len(paths)} images, concurrency={concurrency}")
+     results = [None] * len(paths)
+ 
+diff --git a/scripts/analyze_video.py b/scripts/analyze_video.py
+index 7e7af5e..a99ef8d 100644
+--- a/scripts/analyze_video.py
++++ b/scripts/analyze_video.py
+@@ -39,6 +39,7 @@ import re
+ import subprocess
+ import sys
+ import tempfile
++import time
+ from pathlib import Path
+ 
+ try:
+@@ -105,6 +106,12 @@ def chat_completions_url(base_url: str) -> str:
+         return f"{base}/chat/completions"
+     return f"{base}/v1/chat/completions"
+ 
++
++def apply_optional_thinking(payload: dict) -> None:
++    thinking = os.environ.get("VIDEO_ANALYSIS_THINKING", "").strip()
++    if thinking:
++        payload["thinking"] = {"type": thinking}
++
+ # 关键帧上限 — 按时长动态
+ def keyframe_cap(duration: float) -> int:
+     if duration <= 180:
+@@ -316,18 +323,28 @@ def gemini_chat(messages: list, max_tokens: int = 2500, temperature: float = 0.2
+         "temperature": temperature,
+         "max_tokens": max_tokens,
+     }
++    apply_optional_thinking(payload)
+     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+     try:
++        ark_start = time.perf_counter()
+         r = requests.post(chat_completions_url(base_url), headers=headers,
+                           json=payload, timeout=analysis_timeout_seconds())
+         r.raise_for_status()
+-        content = r.json()["choices"][0]["message"]["content"].strip()
++        data = r.json()
++        content = data["choices"][0]["message"]["content"].strip()
+         if content.startswith("```"):
+             content = content.split("```")[1]
+             if content.startswith("json"):
+                 content = content[4:]
+             content = content.strip()
+-        return json.loads(content)
++        parsed = json.loads(content)
++        print(
++            f"[visual] video ark={time.perf_counter() - ark_start:.2f}s "
++            f"output_tokens={(data.get('usage') or {}).get('completion_tokens', 'unknown')}",
++            file=sys.stderr,
++            flush=True,
++        )
++        return parsed
+     except requests.HTTPError as e:
+         return {"error": f"HTTP {e.response.status_code}", "detail": e.response.text[:500]}
+     except json.JSONDecodeError:
+diff --git a/scripts/ocr_screenshot.py b/scripts/ocr_screenshot.py
+index 5c80677..e8c8985 100644
+--- a/scripts/ocr_screenshot.py
++++ b/scripts/ocr_screenshot.py
+@@ -41,6 +41,7 @@ import json
+ import mimetypes
+ import os
+ import sys
++import time
+ from pathlib import Path
+ 
+ try:
+@@ -111,6 +112,12 @@ def chat_completions_url(base_url: str) -> str:
+     return f"{base}/v1/chat/completions"
+ 
+ 
++def apply_optional_thinking(payload: dict) -> None:
++    thinking = os.environ.get("VIDEO_ANALYSIS_THINKING", "").strip()
++    if thinking:
++        payload["thinking"] = {"type": thinking}
++
++
+ def gemini_generate_content_url(base_url: str, model: str, api_key: str) -> str:
+     base = base_url.rstrip("/")
+     if base.endswith("/v1beta") or base.endswith("/v1"):
+@@ -187,10 +194,18 @@ def call_gemini(image_b64: str, mime: str, api_key: str, base_url: str, model: s
+             "temperature": 0.1,
+             "response_format": {"type": "json_object"},
+         }
++        apply_optional_thinking(payload)
+         headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
++        ark_start = time.perf_counter()
+         resp = requests.post(url, json=payload, headers=headers, timeout=analysis_timeout_seconds())
+         resp.raise_for_status()
+         data = resp.json()
++        print(
++            f"[visual] screenshot ark={time.perf_counter() - ark_start:.2f}s "
++            f"output_tokens={(data.get('usage') or {}).get('completion_tokens', 'unknown')}",
++            file=sys.stderr,
++            flush=True,
++        )
+         return data["choices"][0]["message"]["content"]
+ 
+ 
+diff --git a/tests/test_multimodal_scripts.py b/tests/test_multimodal_scripts.py
+index 65be57f..761ae11 100644
+--- a/tests/test_multimodal_scripts.py
++++ b/tests/test_multimodal_scripts.py
+@@ -2,6 +2,7 @@ import base64
+ import importlib.util
+ import json
+ import sys
++import time
+ from pathlib import Path
+ 
+ from PIL import Image
+@@ -24,6 +25,24 @@ def make_png(path):
+     img.save(path)
+ 
+ 
++def test_chat_completions_url_supports_openai_and_doubao_ark():
++    cases = {
++        "https://proxy.example.com/v1": "https://proxy.example.com/v1/chat/completions",
++        "https://proxy.example.com": "https://proxy.example.com/v1/chat/completions",
++        "https://ark.cn-beijing.volces.com/api/v3": (
++            "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
++        ),
++        "https://ark.cn-beijing.volces.com/api/v3/": (
++            "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
++        ),
++    }
++
++    for script_name in ("analyze_image", "analyze_video", "ocr_screenshot"):
++        module = load_script(script_name)
++        for base_url, expected in cases.items():
++            assert module.chat_completions_url(base_url) == expected
++
++
+ def test_analyze_image_normalizes_non_jpeg_payload(tmp_path, monkeypatch):
+     module = load_script("analyze_image")
+     img_path = tmp_path / "cover.png"
+@@ -46,30 +65,58 @@ def test_analyze_image_retries_with_larger_token_budget(tmp_path, monkeypatch):
+     img_path = tmp_path / "cover.png"
+     make_png(img_path)
+     monkeypatch.setenv("VIDEO_ANALYSIS_API_KEY", "test-key")
++    monkeypatch.setenv("VIDEO_ANALYSIS_TOKEN_BUDGETS", "2000,4000")
+     calls = []
+ 
+     def fake_call_once(api_key, base_url, model, b64, mime, max_tokens, timeout_seconds):
+         calls.append((max_tokens, timeout_seconds))
+-        if max_tokens == 8000:
+-            return {"ok": True, "content": '{"incomplete":', "finish_reason": "length"}
+-        return {"ok": True, "content": '{"parsed": true}', "finish_reason": "stop"}
++        if max_tokens == 2000:
++            return {"ok": True, "content": '{"incomplete":', "finish_reason": "length", "ark_seconds": 1.0}
++        return {
++            "ok": True, "content": '{"parsed": true}', "finish_reason": "stop",
++            "ark_seconds": 1.0, "output_tokens": 123,
++        }
+ 
+     monkeypatch.setattr(module, "_call_once", fake_call_once)
+ 
+     result = module.analyze(str(img_path), timeout_seconds=7)
+ 
+     assert result == {"parsed": True}
+-    assert calls == [(8000, 7), (16000, 7)]
++    assert calls == [(2000, 7), (4000, 7)]
++
++
++def test_visual_thinking_is_only_added_when_configured(monkeypatch):
++    for script_name in ("analyze_image", "analyze_video", "ocr_screenshot"):
++        module = load_script(script_name)
++        payload = {"model": "test"}
++        monkeypatch.delenv("VIDEO_ANALYSIS_THINKING", raising=False)
++        module.apply_optional_thinking(payload)
++        assert "thinking" not in payload
++
++        monkeypatch.setenv("VIDEO_ANALYSIS_THINKING", "disabled")
++        module.apply_optional_thinking(payload)
++        assert payload["thinking"] == {"type": "disabled"}
++
++
++def test_analyze_image_reads_concurrency_from_env(monkeypatch):
++    module = load_script("analyze_image")
++    monkeypatch.delenv("VIDEO_ANALYSIS_CONCURRENCY", raising=False)
++    assert module.analysis_concurrency() == 1
++    monkeypatch.setenv("VIDEO_ANALYSIS_CONCURRENCY", "3")
++    assert module.analysis_concurrency() == 3
+ 
+ 
+-def test_analyze_image_main_supports_batch_paths_and_defaults_to_serial(tmp_path, monkeypatch, capsys):
++def test_analyze_image_main_supports_batch_paths_and_preserves_order(tmp_path, monkeypatch, capsys):
+     module = load_script("analyze_image")
+     first = tmp_path / "a.jpg"
+     second = tmp_path / "b.jpg"
+     first.write_bytes(b"fake-a")
+     second.write_bytes(b"fake-b")
++    monkeypatch.setenv("VIDEO_ANALYSIS_CONCURRENCY", "3")
+ 
+     def fake_analyze(path, timeout_seconds=None):
++        if Path(path).name == "a.jpg":
++            time.sleep(0.02)
+         return {"source": Path(path).name, "timeout": timeout_seconds}
+ 
+     monkeypatch.setattr(module, "analyze", fake_analyze)
+@@ -87,7 +134,7 @@ def test_analyze_image_main_supports_batch_paths_and_defaults_to_serial(tmp_path
+         {"file": "a.jpg", "source": "a.jpg", "timeout": 9},
+         {"file": "b.jpg", "source": "b.jpg", "timeout": 9},
+     ]
+-    assert "concurrency=1" in captured.err
++    assert "concurrency=3" in captured.err
+ 
+ 
+ def test_analyze_video_prefers_video_payload_when_video_exists_by_default(tmp_path, monkeypatch):
+@@ -188,19 +235,3 @@ def test_ocr_screenshot_normalizes_images_and_builds_urls(tmp_path):
+         module.gemini_generate_content_url("https://generativelanguage.googleapis.com/v1beta", "gemini", "key")
+         == "https://generativelanguage.googleapis.com/v1beta/models/gemini:generateContent?key=key"
+     )
+-def test_chat_completions_url_supports_openai_and_doubao_ark():
+-    cases = {
+-        "https://proxy.example.com/v1": "https://proxy.example.com/v1/chat/completions",
+-        "https://proxy.example.com": "https://proxy.example.com/v1/chat/completions",
+-        "https://ark.cn-beijing.volces.com/api/v3": (
+-            "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
+-        ),
+-        "https://ark.cn-beijing.volces.com/api/v3/": (
+-            "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
+-        ),
+-    }
+-
+-    for script_name in ("analyze_image", "analyze_video", "ocr_screenshot"):
+-        module = load_script(script_name)
+-        for base_url, expected in cases.items():
+-            assert module.chat_completions_url(base_url) == expected

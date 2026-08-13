@@ -7,7 +7,7 @@ The authoritative distribution definition is `shared-capabilities/manifest.json`
 Install on a new runtime:
 
 1. Clone the manifest `source` into a trusted tools directory and checkout the exact `pinned_commit`.
-2. Apply every `local_patches` entry, in manifest order, from the Ops Brain repository root. For the current capability: `git apply /path/to/ops-brain-manager/shared-capabilities/patches/social-account-doctor/0001-doubao-ark-chat-url.patch`.
+2. Apply every `local_patches` entry, in manifest order, from the Ops Brain repository root. For the current capability, apply both `0001-doubao-ark-chat-url.patch` and `0002-visual-batch-performance.patch` in that order.
 3. Run `bash install_as_skill.sh --target claude`. On an externally managed Python, use a user-scoped package configuration rather than sudo.
 4. Put required and optional secrets in the installed Skill's `.env`, mode `0600`. Never store them in this repository, the customer Registry, `runtime.json`, or customer workspaces.
 5. Restart Claude Code and run `python3 ops_brain.py capabilities --json`.
@@ -25,9 +25,14 @@ VIDEO_ANALYSIS_MODEL_NAME=<ARK MULTIMODAL MODEL ID>
 VIDEO_ANALYSIS_TIMEOUT_SECONDS=600
 VIDEO_ANALYSIS_NORMALIZE_IMAGES=1
 VIDEO_ANALYSIS_USE_VIDEO_URL=0
+VIDEO_ANALYSIS_CONCURRENCY=3
+VIDEO_ANALYSIS_THINKING=disabled
+VIDEO_ANALYSIS_TOKEN_BUDGETS=2000,4000
 ```
 
 Keep `VIDEO_ANALYSIS_USE_VIDEO_URL=0` for the first provider qualification so video analysis uses the existing JPEG-frame fallback. Audio transcription is a separate protocol integration and remains optional/not configured unless a compatible `/audio/transcriptions` provider is supplied.
+
+For cover sets, invoke `analyze_image.py` once with all paths. The Ops Brain runtime uses concurrency 3, disables Doubao thinking for perception-only work, and uses a measured 2000-token budget with one 4000-token retry. Per-image timing is emitted to stderr without keys or image payloads.
 
 `ops_brain.py doctor` remains Core/Registry health only. `capabilities` reports optional third-party health separately, so provider outages or missing optional visual/audio configuration do not make Ops Brain Core unhealthy.
 
