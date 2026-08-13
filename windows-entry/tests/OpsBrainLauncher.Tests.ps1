@@ -184,4 +184,13 @@ exit 0
             (@($output) -join "`n") | Should -Match 'Ops Brain launch failed'
         } finally { Remove-Item Env:OPS_BRAIN_TEST_MODE -ErrorAction SilentlyContinue; if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Recurse -Force } }
     }
+    It 'shows shared capabilities without making them part of core checks' {
+        $sourceRoot = $env:OPS_BRAIN_LAUNCHER_SOURCE
+        $repair = Get-Content -LiteralPath (Join-Path $sourceRoot 'templates\repair_ops_runtime_entry.ps1') -Raw -Encoding UTF8
+        $repair | Should -Match "@\('capabilities', '--json'\)"
+        $repair | Should -Match 'Shared Intelligence Capabilities \(non-blocking\)'
+        $repair | Should -Not -Match "checks.*capabilit"
+        $repair | Should -Match 'test -x \$runtime\.agent_command_wsl'
+        $repair | Should -Not -Match 'which claude-deepseek'
+    }
 }

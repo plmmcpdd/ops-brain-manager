@@ -5,6 +5,8 @@ set -u
 STATE_ROOT="${OPS_BRAIN_AGENT_STATE_ROOT:-/home/rong/projects/content-ops-lab/ops-brain-manager/.ops-brain/agent-sessions}"
 ENV_FILE="$HOME/.config/claude-deepseek/env"
 BASE_CLAUDE="${OPS_BRAIN_BASE_CLAUDE:-/home/rong/.local/bin/claude}"
+SHARED_CAPABILITY_MANIFEST="${OPS_BRAIN_SHARED_CAPABILITY_MANIFEST:-/home/rong/projects/content-ops-lab/ops-brain-manager/shared-capabilities/manifest.json}"
+export PATH="$HOME/.local/bin:$PATH"
 
 fail() { printf 'Ops Brain Agent error: %s\n' "$1" >&2; exit "${2:-2}"; }
 lock_path_for_client() {
@@ -31,6 +33,31 @@ wait_for_file() {
   done
   return 1
 }
+run_agent_with_shared_capability_env() {
+  python3 - "$SHARED_CAPABILITY_MANIFEST" "$AGENT_COMMAND" <<'PY'
+import json, os, re, subprocess, sys
+from pathlib import Path
+
+allowed = re.compile(r"^(TIKHUB_API_KEY|VIDEO_ANALYSIS_[A-Z0-9_]+|AUDIO_TRANSCRIPTION_[A-Z0-9_]+)$")
+env = os.environ.copy()
+manifest = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+for capability in manifest.get("capabilities", []):
+    config = Path(capability["install_location"]).expanduser() / capability["configuration_file"]
+    if not config.is_file():
+        continue
+    for raw in config.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key, value = key.strip(), value.strip()
+        if allowed.fullmatch(key):
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+                value = value[1:-1]
+            env[key] = value
+raise SystemExit(subprocess.run([sys.argv[2]], env=env).returncode)
+PY
+}
 lock_metadata_pid() { sed -n 's/.*"wrapper_pid"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$1/metadata.json" 2>/dev/null | head -n 1; }
 remove_own_lock() {
   [[ -n "${LOCK_DIR:-}" && -f "$LOCK_DIR/metadata.json" ]] || return 0
@@ -50,6 +77,8 @@ diagnose() {
   printf 'agent_command_exists=%s\n' "$([[ -x "$1" ]] && echo true || echo false)"
   printf 'deepseek_env_exists=%s\n' "$([[ -f "$ENV_FILE" ]] && echo true || echo false)"
   printf 'claude_exists=%s\n' "$([[ -x "$BASE_CLAUDE" ]] && echo true || echo false)"
+  printf 'shared_capability_manifest_exists=%s\n' "$([[ -f "$SHARED_CAPABILITY_MANIFEST" ]] && echo true || echo false)"
+  printf 'tikhub_exists=%s\n' "$([[ -x "$HOME/.local/bin/tikhub" ]] && echo true || echo false)"
   [[ -d "$STATE_ROOT" ]] || return 0
   for lock in "$STATE_ROOT"/*.lock; do
     [[ -d "$lock" ]] || continue
@@ -93,7 +122,11 @@ trap remove_own_lock EXIT INT TERM
 write_metadata || fail 'could not write session metadata' 12
 cd "$WORKSPACE" || fail 'could not enter workspace' 2
 printf 'Current client: %s\nCurrent workspace: %s\nStarting Claude Code through claude-deepseek...\n' "$CLIENT_ID" "$WORKSPACE"
-"$AGENT_COMMAND"
+if [[ -f "$SHARED_CAPABILITY_MANIFEST" ]]; then
+  run_agent_with_shared_capability_env
+else
+  "$AGENT_COMMAND"
+fi
 exit_code=$?
 printf 'Claude Code exited with code: %s\n' "$exit_code"
 exit "$exit_code"

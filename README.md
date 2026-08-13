@@ -23,6 +23,7 @@ python3 ops_brain.py open --client client-a
 python3 ops_brain.py archive --client client-a
 python3 ops_brain.py restore --client client-a
 python3 ops_brain.py doctor
+python3 ops_brain.py capabilities
 ```
 
 `create` 只创建新的空目录并登记；如果目标目录已经存在，必须为空。它不会执行 Git clone、不会运行 `cheat-init`、不会创建 `.cheat-state.json`，也不会生成任何 Cheat 文件。
@@ -45,6 +46,8 @@ python3 ops_brain.py open --client client-a --app code
 ```
 
 `doctor` 完全只读。退出码为：`0` 无问题、`1` 发现问题、`2` 无法安全读取 Registry。旧 Registry 中没有 `origin` 的客户会被标为 `legacy`，只提示人工确认，不会擅自推断或改写。
+
+`capabilities` 独立、只读地检查 Claude 共享能力及其 provider 配置，不改变 `doctor` 的 Core/Registry 健康语义。安装和分发契约见 [`docs/SHARED-CAPABILITIES.md`](docs/SHARED-CAPABILITIES.md)。
 
 ## PublishOS 本地数据桥
 

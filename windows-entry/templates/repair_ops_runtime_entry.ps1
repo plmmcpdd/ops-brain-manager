@@ -8,9 +8,15 @@ try {
     foreach ($name in @('wsl.exe', 'code.cmd')) { $checks += [pscustomobject]@{ check=$name; ok=($null -ne (Get-Command $name -ErrorAction SilentlyContinue)) } }
     $doctor = Invoke-OpsManagerJson -Runtime $runtime -ManagerArguments @('doctor', '--json')
     $checks += [pscustomobject]@{ check='manager doctor'; ok=($doctor.ExitCode -eq 0) }
+    $capabilities = Invoke-OpsManagerJson -Runtime $runtime -ManagerArguments @('capabilities', '--json')
+    Write-Host 'Shared Intelligence Capabilities (non-blocking):'
+    foreach ($capability in $capabilities.Payload.data.capabilities) {
+        Write-Host ("  {0,-28} {1}" -f $capability.display_name, $capability.status)
+        foreach ($component in $capability.components) { Write-Host ("    {0,-26} {1}" -f $component.id, $component.status) }
+    }
     $runtimeCheck = & wsl.exe -d $runtime.wsl_distribution -- test -d $runtime.runtime_wsl_path
     $checks += [pscustomobject]@{ check='cheat runtime'; ok=($LASTEXITCODE -eq 0) }
-    $agentCheck = & wsl.exe -d $runtime.wsl_distribution -- which claude-deepseek
+    $agentCheck = & wsl.exe -d $runtime.wsl_distribution -- test -x $runtime.agent_command_wsl
     $checks += [pscustomobject]@{ check='claude-deepseek'; ok=($LASTEXITCODE -eq 0) }
     if ($runtime.agent_launcher_wsl -and $runtime.agent_command_wsl) {
         $sessionReport = & wsl.exe -d $runtime.wsl_distribution -- bash $runtime.agent_launcher_wsl --diagnose $runtime.agent_command_wsl

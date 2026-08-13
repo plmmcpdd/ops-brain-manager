@@ -5,7 +5,13 @@ LAUNCHER="$ROOT/launcher/launch_ops_agent.sh"
 TMP="$(mktemp -d)"
 TEST_HOME="$TMP/home"
 mkdir -p "$TEST_HOME/.config/claude-deepseek" "$TEST_HOME/bin"
+mkdir -p "$TEST_HOME/.claude/skills/social-account-doctor" "$TEST_HOME/.local/bin"
 : > "$TEST_HOME/.config/claude-deepseek/env"
+printf 'TIKHUB_API_KEY=configured\n' > "$TEST_HOME/.claude/skills/social-account-doctor/.env"
+printf '{"capabilities":[{"install_location":"%s","configuration_file":".env"}]}\n' "$TEST_HOME/.claude/skills/social-account-doctor" > "$TEST_HOME/capabilities.json"
+export OPS_BRAIN_SHARED_CAPABILITY_MANIFEST="$TEST_HOME/capabilities.json"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$TEST_HOME/.local/bin/tikhub"
+chmod +x "$TEST_HOME/.local/bin/tikhub"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$TEST_HOME/bin/claude"
 chmod +x "$TEST_HOME/bin/claude"
 trap 'rm -rf "$TMP"' EXIT
@@ -16,6 +22,8 @@ cat > "$FAKE" <<'EOF'
 #!/usr/bin/env bash
 if [[ -n "${OPS_BRAIN_METADATA_COPY:-}" ]]; then cp -- "${OPS_BRAIN_AGENT_STATE_ROOT}/${OPS_BRAIN_EXPECTED_CLIENT_ID}.lock/metadata.json" "$OPS_BRAIN_METADATA_COPY"; fi
 pwd > "${OPS_BRAIN_FAKE_PWD:?}"
+printf '%s\n' "${TIKHUB_API_KEY:-missing}" > "${OPS_BRAIN_FAKE_PWD}.env"
+command -v tikhub > "${OPS_BRAIN_FAKE_PWD}.tikhub"
 sleep "${OPS_BRAIN_FAKE_SLEEP:-0}"
 EOF
 chmod +x "$FAKE"
@@ -24,6 +32,8 @@ run_agent() {
   local client_id="$1" pwd_file="$2"
   HOME="$TEST_HOME" OPS_BRAIN_BASE_CLAUDE="$TEST_HOME/bin/claude" OPS_BRAIN_AGENT_STATE_ROOT="$STATE" OPS_BRAIN_FAKE_PWD="$pwd_file" "$LAUNCHER" "$client_id" "$WORK_A" "$FAKE"
   [[ "$(<"$pwd_file")" == "$WORK_A" ]]
+  [[ "$(<"$pwd_file.env")" == configured ]]
+  [[ "$(<"$pwd_file.tikhub")" == "$TEST_HOME/.local/bin/tikhub" ]]
   [[ ! -e "$STATE/$client_id.lock" ]]
 }
 

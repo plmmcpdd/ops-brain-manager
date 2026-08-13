@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "capabilities": [
+    {
+      "id": "social-account-doctor",
+      "display_name": "social-account-doctor",
+      "runtime": "claude",
+      "install_location": "~/.claude/skills/social-account-doctor",
+      "configuration_file": ".env",
+      "source": "https://github.com/JuneYaooo/social-account-doctor.git",
+      "pinned_commit": "88bb251248ca05d7e17c5eed6a7d3885d938180e",
+      "license": "MIT",
+      "executables": [
+        {"id": "python3", "command": "python3"},
+        {"id": "tikhub", "path": "~/.local/bin/tikhub"},
+        {"id": "ffmpeg", "path": "~/.local/bin/ffmpeg"},
+        {"id": "ffprobe", "path": "~/.local/bin/ffprobe"}
+      ],
+      "components": [
+        {"id": "TikHub", "required": true, "config_keys": ["TIKHUB_API_KEY"], "executables": ["tikhub"]},
+        {"id": "Visual Analysis", "required": false, "config_keys": ["VIDEO_ANALYSIS_API_KEY", "VIDEO_ANALYSIS_BASE_URL"], "executables": []},
+        {"id": "Audio Transcription", "required": false, "config_keys": ["AUDIO_TRANSCRIPTION_API_KEY"], "executables": []},
+        {"id": "Video Processing", "required": false, "config_keys": [], "executables": ["ffmpeg", "ffprobe"]}
+      ]
+    }
+  ]
+}

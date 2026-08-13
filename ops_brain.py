@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -24,6 +25,7 @@ DEFAULT_REGISTRY = Path(__file__).resolve().parent / ".ops-brain" / "clients.jso
 UPSTREAM_RUNTIME = Path("/home/rong/tools/cheat-on-content")
 VALID_STATUSES = {"active", "archived"}
 VALID_ORIGINS = {"created", "attached"}
+CAPABILITY_MANIFEST = Path(__file__).resolve().parent / "shared-capabilities" / "manifest.json"
 WINDOWS_RESERVED_SEGMENTS = {
     "con", "prn", "aux", "nul",
     *(f"com{number}" for number in range(1, 10)),
@@ -590,6 +592,76 @@ def doctor(args: argparse.Namespace) -> int:
     return exit_code
 
 
+def _configured_keys(path: Path) -> set[str]:
+    if not path.is_file():
+        return set()
+    configured: set[str] = set()
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        match = re.match(r"^\s*([A-Z][A-Z0-9_]*)\s*=\s*(.*?)\s*$", raw)
+        if match:
+            value = match.group(2).strip().strip("\"'")
+            placeholder = any(marker in value.casefold() for marker in ("your-", "example.com", "replace-me", "change-me"))
+            if value and not value.startswith("#") and not placeholder:
+                configured.add(match.group(1))
+    return configured
+
+
+def capabilities_report(manifest_path: Path = CAPABILITY_MANIFEST) -> dict[str, Any]:
+    """Inspect optional shared runtimes without changing Core doctor semantics."""
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    reports: list[dict[str, Any]] = []
+    for capability in manifest["capabilities"]:
+        install = Path(capability["install_location"]).expanduser()
+        config = install / capability["configuration_file"]
+        configured = _configured_keys(config)
+        dependencies: dict[str, str] = {}
+        for dependency in capability.get("executables", []):
+            if isinstance(dependency, str):
+                dependency = {"id": dependency, "command": dependency}
+            path = dependency.get("path")
+            ready = (
+                Path(path).expanduser().is_file() and os.access(Path(path).expanduser(), os.X_OK)
+                if path else shutil.which(dependency["command"]) is not None
+            )
+            dependencies[dependency["id"]] = "READY" if ready else "MISSING"
+        components: list[dict[str, str]] = []
+        component_sources = capability.get("components", [])
+        for component in component_sources:
+            missing_keys = [key for key in component.get("config_keys", []) if key not in configured]
+            missing_tools = [name for name in component.get("executables", []) if dependencies.get(name) != "READY"]
+            status = "NOT_CONFIGURED" if missing_keys else ("MISSING" if missing_tools else "READY")
+            components.append({"id": component["id"], "status": status})
+        required_bad = any(
+            item["status"] != "READY" and source.get("required", False)
+            for item, source in zip(components, component_sources)
+        )
+        optional_bad = any(item["status"] != "READY" for item in components)
+        if not (install / "SKILL.md").is_file():
+            status = "MISSING"
+        elif required_bad or any(value == "MISSING" for value in dependencies.values()):
+            status = "DEGRADED"
+        elif optional_bad:
+            status = "DEGRADED"
+        else:
+            status = "READY"
+        reports.append({
+            "id": capability["id"], "display_name": capability["display_name"],
+            "runtime": capability["runtime"], "status": status,
+            "install_location": str(install), "pinned_commit": capability["pinned_commit"],
+            "dependencies": dependencies, "components": components,
+        })
+    return {"core_health": "SEPARATE", "capabilities": reports}
+
+
+def capabilities(args: argparse.Namespace) -> int:
+    report = capabilities_report(args.manifest)
+    for capability in report["capabilities"]:
+        print(f"{capability['display_name']}: {capability['status']}")
+        for component in capability["components"]:
+            print(f"  {component['id']}: {component['status']}")
+    return 0
+
+
 def emit_json(payload: dict[str, Any]) -> None:
     """Windows PowerShell 5.1-safe: exactly one ASCII JSON object on stdout."""
     print(json.dumps(payload, ensure_ascii=True, separators=(",", ":")))
@@ -624,6 +696,9 @@ def run_json_command(args: argparse.Namespace) -> int:
         if args.command == "resolve-launch":
             payload = resolve_launch(load_registry(args.registry), args.client)
             emit_json({"ok": True, "code": "ok", "data": payload, "error": None})
+            return 0
+        if args.command == "capabilities":
+            emit_json({"ok": True, "code": "ok", "data": capabilities_report(args.manifest), "error": None})
             return 0
         raise RegistryError(f"JSON mode is not supported for {args.command}")
     except RegistryError as exc:
@@ -668,6 +743,10 @@ def parser() -> argparse.ArgumentParser:
     command.add_argument("--client", required=True)
     command.add_argument("--json", dest="json_output", action="store_true")
     command.set_defaults(handler=lambda args: 0)
+    command = commands.add_parser("capabilities", help="只读检查共享能力；不影响 Core doctor")
+    command.add_argument("--manifest", type=Path, default=CAPABILITY_MANIFEST)
+    command.add_argument("--json", dest="json_output", action="store_true")
+    command.set_defaults(handler=capabilities)
     publishos = commands.add_parser("publishos", help="只读 PublishOS 本地数据桥")
     publishos_commands = publishos.add_subparsers(dest="publishos_command", required=True)
     command = publishos_commands.add_parser("link")

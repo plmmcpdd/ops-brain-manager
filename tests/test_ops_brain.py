@@ -447,6 +447,67 @@ class RegistryTests(unittest.TestCase):
             ops_brain.validate_registry_for_write(ops_brain.load_registry(self.registry))
 
 
+class SharedCapabilityTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.install = self.root / "skill"
+        self.manifest = self.root / "manifest.json"
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def write_manifest(self):
+        self.manifest.write_text(json.dumps({"version": 1, "capabilities": [{
+            "id": "test-capability", "display_name": "Test capability", "runtime": "claude",
+            "install_location": str(self.install), "configuration_file": ".env", "pinned_commit": "abc",
+            "executables": [{"id": "python3", "command": "python3"}], "components": [
+                {"id": "Data", "required": True, "config_keys": ["DATA_KEY"], "executables": ["python3"]},
+                {"id": "Visual", "required": False, "config_keys": ["VISUAL_KEY"], "executables": []},
+            ],
+        }]}), encoding="utf-8")
+
+    def test_capability_status_is_separate_and_never_exposes_secret_values(self):
+        self.write_manifest()
+        self.install.mkdir()
+        (self.install / "SKILL.md").write_text("name: test", encoding="utf-8")
+        secret = "secret-value-must-not-appear"
+        (self.install / ".env").write_text(f"DATA_KEY={secret}\n", encoding="utf-8")
+        report = ops_brain.capabilities_report(self.manifest)
+        self.assertEqual(report["core_health"], "SEPARATE")
+        capability = report["capabilities"][0]
+        self.assertEqual(capability["status"], "DEGRADED")
+        self.assertEqual(capability["components"], [
+            {"id": "Data", "status": "READY"},
+            {"id": "Visual", "status": "NOT_CONFIGURED"},
+        ])
+        self.assertNotIn(secret, json.dumps(report))
+
+    def test_missing_install_is_reported_without_failing_json_command(self):
+        self.write_manifest()
+        output = io.StringIO()
+        with redirect_stdout(output):
+            exit_code = ops_brain.main(["capabilities", "--manifest", str(self.manifest), "--json"])
+        payload = json.loads(output.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["data"]["core_health"], "SEPARATE")
+        self.assertEqual(payload["data"]["capabilities"][0]["status"], "MISSING")
+
+    def test_example_placeholders_are_not_reported_as_configured(self):
+        self.write_manifest()
+        self.install.mkdir()
+        (self.install / "SKILL.md").write_text("name: test", encoding="utf-8")
+        (self.install / ".env").write_text(
+            "DATA_KEY=your-data-key\nVISUAL_KEY=https://your-vision.example.com/v1\n", encoding="utf-8"
+        )
+        components = ops_brain.capabilities_report(self.manifest)["capabilities"][0]["components"]
+        self.assertEqual(components, [
+            {"id": "Data", "status": "NOT_CONFIGURED"},
+            {"id": "Visual", "status": "NOT_CONFIGURED"},
+        ])
+
+
 class ExternalIntegrityTests(unittest.TestCase):
     UPSTREAM = Path("/home/rong/tools/cheat-on-content")
     HVAC = Path("/home/rong/projects/content-ops-lab/hvac-demo")
