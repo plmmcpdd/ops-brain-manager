@@ -1,0 +1,351 @@
+diff --git a/SKILL.md b/SKILL.md
+index c9ea9ff..eed96d3 100644
+--- a/SKILL.md
++++ b/SKILL.md
+@@ -805,6 +805,14 @@ tikhub kuaishou kuaishou_app_search_video_v2 --keyword Cursor --page 1
+     ```
+     详见 `tikhub/README.md`。
+ 
++12. **TikHub platform call failure contract**：
++    - 首次失败时，原工具、原参数短 backoff 后只重试 1 次。
++    - 若错误可能与 MCP session 有关，刷新 session 后再试 1 次；总重试必须有界。
++    - HTTP 401 不重试、不刷新 session、不修改 API Key，明确报告 credential problem。
++    - HTTP 429 backoff 后只重试 1 次，不提高并发。
++    - `can't start new thread` 按 upstream transient/backend error 处理，limited retry，不修改 API Key。
++    - 仍失败时标记 `TikHub layer unavailable`，按 H3 把交付降级为“部分（缺平台数据）”。普通 Web Search / Jina 结果只能标为 `secondary evidence`，严禁写成 TikHub 返回或“真实平台数据”。
++
+ ---
+ 
+ ## 9. 数据时效性说明
+diff --git a/tests/test_tikhub_failure_policy.py b/tests/test_tikhub_failure_policy.py
+new file mode 100644
+index 0000000..6bbdb04
+--- /dev/null
++++ b/tests/test_tikhub_failure_policy.py
+@@ -0,0 +1,118 @@
++import importlib.util
++import sys
++from pathlib import Path
++
++import pytest
++
++
++CLIENT_PATH = Path(__file__).resolve().parents[1] / "tikhub" / "lib" / "tikhub_client.py"
++
++
++def load_client_module():
++    spec = importlib.util.spec_from_file_location("tikhub_client_under_test", CLIENT_PATH)
++    module = importlib.util.module_from_spec(spec)
++    sys.modules[spec.name] = module
++    spec.loader.exec_module(module)
++    return module
++
++
++def client(module):
++    return module.TikhubClient("xiaohongshu", api_key="test-key", timeout=1)
++
++
++def test_transient_failure_retries_same_request_once(monkeypatch):
++    module = load_client_module()
++    instance = client(module)
++    monkeypatch.setattr(instance, "_ensure_session", lambda: "session-a")
++    monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
++    calls = []
++
++    def fake_post(payload, session_id):
++        calls.append((payload["params"], session_id))
++        if len(calls) == 1:
++            return {
++                "result": {
++                    "isError": True,
++                    "content": [{"type": "text", "text": "can't start new thread"}],
++                }
++            }, {}
++        return {"result": {"ok": True}}, {}
++
++    monkeypatch.setattr(instance, "_post", fake_post)
++    params = {"name": "search", "arguments": {"keyword": "移民"}}
++    assert instance._call_jsonrpc("tools/call", params) == {"ok": True}
++    assert calls == [(params, "session-a"), (params, "session-a")]
++
++
++def test_session_failure_gets_original_retry_then_one_refresh(monkeypatch):
++    module = load_client_module()
++    instance = client(module)
++    sessions = iter(("session-a", "session-a", "session-b"))
++    monkeypatch.setattr(instance, "_ensure_session", lambda: next(sessions))
++    monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
++    dropped = []
++    monkeypatch.setattr(instance, "_drop_session", lambda: dropped.append(True))
++    calls = []
++
++    def fake_post(payload, session_id):
++        calls.append(session_id)
++        if len(calls) < 3:
++            raise module.TikhubError("MCP session expired", status_code=440)
++        return {"result": "ready"}, {}
++
++    monkeypatch.setattr(instance, "_post", fake_post)
++    assert instance._call_jsonrpc("tools/call", {"same": "params"}) == "ready"
++    assert calls == ["session-a", "session-a", "session-b"]
++    assert dropped == [True]
++
++
++def test_401_is_not_retried_and_does_not_refresh(monkeypatch):
++    module = load_client_module()
++    instance = client(module)
++    monkeypatch.setattr(instance, "_ensure_session", lambda: "session-a")
++    dropped = []
++    monkeypatch.setattr(instance, "_drop_session", lambda: dropped.append(True))
++    calls = []
++
++    def fake_post(payload, session_id):
++        calls.append(session_id)
++        raise module.TikhubCredentialError("HTTP 401", status_code=401)
++
++    monkeypatch.setattr(instance, "_post", fake_post)
++    with pytest.raises(module.TikhubCredentialError, match="not retried"):
++        instance._call_jsonrpc("tools/call", {})
++    assert calls == ["session-a"]
++    assert dropped == []
++
++
++def test_429_backs_off_without_more_than_one_retry(monkeypatch):
++    module = load_client_module()
++    instance = client(module)
++    monkeypatch.setattr(instance, "_ensure_session", lambda: "session-a")
++    sleeps = []
++    monkeypatch.setattr(module.time, "sleep", sleeps.append)
++    calls = []
++
++    def fake_post(payload, session_id):
++        calls.append(session_id)
++        raise module.TikhubError("HTTP 429: rate limited", status_code=429)
++
++    monkeypatch.setattr(instance, "_post", fake_post)
++    with pytest.raises(module.TikhubUnavailableError, match="layer unavailable"):
++        instance._call_jsonrpc("tools/call", {})
++    assert calls == ["session-a", "session-a"]
++    assert sleeps == [1.0]
++
++
++def test_exhausted_transient_failure_is_marked_unavailable(monkeypatch):
++    module = load_client_module()
++    instance = client(module)
++    monkeypatch.setattr(instance, "_ensure_session", lambda: "session-a")
++    monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
++
++    def fail(payload, session_id):
++        raise module.TikhubError("upstream down")
++
++    monkeypatch.setattr(instance, "_post", fail)
++    with pytest.raises(module.TikhubUnavailableError, match="TikHub layer unavailable"):
++        instance._call_jsonrpc("tools/call", {})
+diff --git a/tikhub/README.md b/tikhub/README.md
+index 9172df0..8c8659d 100644
+--- a/tikhub/README.md
++++ b/tikhub/README.md
+@@ -71,6 +71,15 @@ python3 tikhub/scripts/refresh_tools.py tiktok
+ | `RetryError[<HTTPStatusError>]` | Upstream tikhub flakiness; rotate to fallback tool (see search skill docs) |
+ | `tool 'X' not found in catalog` | Cache stale → `python3 tikhub/scripts/refresh_tools.py <platform>` |
+ 
++## Platform-call failure policy
++
++- First failure: retry the exact same tool and arguments once after a short backoff.
++- If either failure indicates an MCP session problem: discard the cached session, initialize a new one, and retry once more.
++- HTTP 401: do not retry or refresh; report `credential_problem` and leave the API key unchanged.
++- HTTP 429: back off and retry once without increasing concurrency.
++- `can't start new thread`: treat as an upstream transient/backend error and apply only the bounded retry above.
++- When retries are exhausted, the CLI reports `layer=TikHub` and `status=unavailable`. Web Search or Jina may be offered only as explicitly labeled `secondary evidence`; their output is never TikHub/platform-ground-truth data.
++
+ ## Debugging
+ 
+ ```bash
+diff --git a/tikhub/bin/tikhub b/tikhub/bin/tikhub
+index b97154b..b2a77c2 100755
+--- a/tikhub/bin/tikhub
++++ b/tikhub/bin/tikhub
+@@ -33,7 +33,14 @@ from pathlib import Path
+ HERE = Path(__file__).resolve().parent
+ sys.path.insert(0, str(HERE.parent / "lib"))
+ 
+-from tikhub_client import TikhubClient, TikhubError, health, platforms  # noqa: E402
++from tikhub_client import (  # noqa: E402
++    TikhubClient,
++    TikhubCredentialError,
++    TikhubError,
++    TikhubUnavailableError,
++    health,
++    platforms,
++)
+ 
+ REFERENCES_DIR = HERE.parent / "references"
+ SUPPORTED_PLATFORMS = (
+@@ -59,6 +66,16 @@ def _die(msg: str, code: int = 1) -> None:
+     sys.exit(code)
+ 
+ 
++def _die_tikhub(error: TikhubError) -> None:
++    payload = {"error": str(error), "layer": "TikHub"}
++    if isinstance(error, TikhubCredentialError):
++        payload["status"] = "credential_problem"
++    elif isinstance(error, TikhubUnavailableError):
++        payload["status"] = "unavailable"
++    print(json.dumps(payload, ensure_ascii=False), file=sys.stderr)
++    sys.exit(2)
++
++
+ def _print_json(obj) -> None:
+     print(json.dumps(obj, ensure_ascii=False, indent=2))
+ 
+@@ -194,7 +211,7 @@ def cmd_call(platform: str, tool_name: str, args: argparse.Namespace, extras: li
+         client = TikhubClient(platform=platform)
+         result = client.call(tool_name, arguments)
+     except TikhubError as e:
+-        _die(str(e), code=2)
++        _die_tikhub(e)
+     if isinstance(result, (dict, list)):
+         _print_json(result)
+     else:
+diff --git a/tikhub/lib/tikhub_client.py b/tikhub/lib/tikhub_client.py
+index 3fce5a7..b98aed0 100644
+--- a/tikhub/lib/tikhub_client.py
++++ b/tikhub/lib/tikhub_client.py
+@@ -43,6 +43,18 @@ DEBUG = os.environ.get("TIKHUB_DEBUG") == "1"
+ class TikhubError(Exception):
+     """Raised on transport / protocol / upstream errors."""
+ 
++    def __init__(self, message: str, *, status_code: int | None = None):
++        super().__init__(message)
++        self.status_code = status_code
++
++
++class TikhubUnavailableError(TikhubError):
++    """Raised after the bounded retry policy has been exhausted."""
++
++
++class TikhubCredentialError(TikhubError):
++    """Raised for HTTP 401; credentials are never retried or changed."""
++
+ 
+ def _debug(msg: str) -> None:
+     if DEBUG:
+@@ -174,7 +186,8 @@ class TikhubClient:
+                 resp_headers = {k.lower(): v for k, v in resp.headers.items()}
+         except urllib.error.HTTPError as e:
+             err_body = e.read().decode("utf-8", errors="replace") if e.fp else ""
+-            raise TikhubError(f"HTTP {e.code}: {err_body[:500]}")
++            error_type = TikhubCredentialError if e.code == 401 else TikhubError
++            raise error_type(f"HTTP {e.code}: {err_body[:500]}", status_code=e.code)
+         except urllib.error.URLError as e:
+             raise TikhubError(f"network error: {e.reason}")
+         parsed = _parse_sse(resp_body)
+@@ -206,10 +219,47 @@ class TikhubClient:
+     def _ensure_session(self) -> str:
+         return self._load_session() or self.initialize()
+ 
++    @staticmethod
++    def _is_session_related(error: TikhubError) -> bool:
++        if error.status_code == 401:
++            return False
++        message = str(error).casefold()
++        return error.status_code == 440 or any(
++            marker in message for marker in ("session", "mcp-session-id", "session id")
++        )
++
++    @staticmethod
++    def _retry_delay(error: TikhubError) -> float:
++        return 1.0 if error.status_code == 429 else 0.25
++
++    @staticmethod
++    def _jsonrpc_error(method: str, data: dict) -> TikhubError | None:
++        if "error" not in data:
++            return None
++        error = data["error"]
++        code = error.get("code") if isinstance(error, dict) else None
++        return TikhubError(
++            f"{method} failed: {error}",
++            status_code=code if isinstance(code, int) else None,
++        )
++
++    @staticmethod
++    def _mcp_result_error(method: str, result: Any) -> TikhubError | None:
++        if method != "tools/call" or not isinstance(result, dict) or not result.get("isError"):
++            return None
++        messages = []
++        for item in result.get("content") or []:
++            if isinstance(item, dict) and item.get("type") == "text":
++                messages.append(str(item.get("text", "")))
++        detail = " ".join(messages).strip() or "MCP tool returned isError=true"
++        return TikhubError(f"{method} failed: {detail}")
++
+     def _call_jsonrpc(self, method: str, params: dict) -> Any:
+-        """One retry on session-related failure: drop cache, re-init, retry."""
+-        for attempt in (1, 2):
+-            session_id = self._ensure_session()
++        """Run one transient retry, then one session refresh when justified."""
++        last_error: TikhubError | None = None
++        saw_session_failure = False
++        session_refreshed = False
++        for attempt in range(3):
+             payload = {
+                 "jsonrpc": "2.0",
+                 "id": self._next_id(),
+@@ -217,24 +267,43 @@ class TikhubClient:
+                 "params": params,
+             }
+             try:
++                session_id = self._ensure_session()
+                 data, _headers = self._post(payload, session_id=session_id)
++                error = self._jsonrpc_error(method, data)
++                if error:
++                    raise error
++                result = data.get("result")
++                error = self._mcp_result_error(method, result)
++                if error:
++                    raise error
+             except TikhubError as e:
+-                msg = str(e).lower()
+-                if attempt == 1 and ("session" in msg or "401" in msg or "440" in msg):
+-                    _debug("session looks invalid; refreshing and retrying")
++                if e.status_code == 401 or isinstance(e, TikhubCredentialError):
++                    raise TikhubCredentialError(
++                        "TikHub credential problem (HTTP 401); request was not retried",
++                        status_code=401,
++                    ) from e
++                last_error = e
++                saw_session_failure = saw_session_failure or self._is_session_related(e)
++                if attempt == 0:
++                    delay = self._retry_delay(e)
++                    _debug(f"TikHub call failed; retrying original parameters after {delay:.2f}s")
++                    time.sleep(delay)
++                    continue
++                if attempt == 1 and saw_session_failure:
++                    _debug("failure may be MCP-session-related; refreshing for final retry")
+                     self._drop_session()
++                    session_refreshed = True
++                    time.sleep(self._retry_delay(e))
+                     continue
+-                raise
+-            if "error" in data:
+-                err = data["error"]
+-                # JSON-RPC -32001/-32600 etc. could indicate bad session — retry once
+-                if attempt == 1 and isinstance(err, dict):
+-                    msg = (err.get("message") or "").lower()
+-                    if "session" in msg:
+-                        self._drop_session()
+-                        continue
+-                raise TikhubError(f"{method} failed: {err}")
+-            return data.get("result")
++                break
++            return result
++
++        detail = str(last_error) if last_error else "unknown upstream failure"
++        refresh = "; MCP session refreshed once" if session_refreshed else ""
++        raise TikhubUnavailableError(
++            f"TikHub layer unavailable after limited retry{refresh}: {detail}",
++            status_code=last_error.status_code if last_error else None,
++        ) from last_error
+ 
+     # ---------- public ----------
+ 

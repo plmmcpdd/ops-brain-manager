@@ -22,6 +22,12 @@
           "path": "shared-capabilities/patches/social-account-doctor/0002-visual-batch-performance.patch",
           "applies_to_commit": "88bb251248ca05d7e17c5eed6a7d3885d938180e",
           "description": "Batch covers at configurable concurrency, disable optional thinking, and add safe timing metrics"
+        },
+        {
+          "id": "tikhub-failure-policy",
+          "path": "shared-capabilities/patches/social-account-doctor/0003-tikhub-failure-policy.patch",
+          "applies_to_commit": "88bb251248ca05d7e17c5eed6a7d3885d938180e",
+          "description": "Bound TikHub retries, refresh only session failures, and preserve evidence provenance"
         }
       ],
       "executables": [

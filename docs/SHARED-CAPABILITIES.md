@@ -7,7 +7,7 @@ The authoritative distribution definition is `shared-capabilities/manifest.json`
 Install on a new runtime:
 
 1. Clone the manifest `source` into a trusted tools directory and checkout the exact `pinned_commit`.
-2. Apply every `local_patches` entry, in manifest order, from the Ops Brain repository root. For the current capability, apply both `0001-doubao-ark-chat-url.patch` and `0002-visual-batch-performance.patch` in that order.
+2. Apply every `local_patches` entry, in manifest order, from the Ops Brain repository root. For the current capability, apply `0001-doubao-ark-chat-url.patch`, `0002-visual-batch-performance.patch`, then `0003-tikhub-failure-policy.patch`.
 3. Run `bash install_as_skill.sh --target claude`. On an externally managed Python, use a user-scoped package configuration rather than sudo.
 4. Put required and optional secrets in the installed Skill's `.env`, mode `0600`. Never store them in this repository, the customer Registry, `runtime.json`, or customer workspaces.
 5. Restart Claude Code and run `python3 ops_brain.py capabilities --json`.
@@ -38,3 +38,9 @@ For cover sets, invoke `analyze_image.py` once with all paths. The Ops Brain run
 
 The Agent launcher starts Claude after `cd "$WORKSPACE"`. Upstream writes completed business outputs to `./reports` and `./assets`; therefore shared code does not imply shared customer output.
 The launcher also adds `~/.local/bin` to `PATH` and loads each manifest-declared Skill `.env` into the Claude process through an allowlist. Secrets stay in the runtime configuration and are not copied to the workspace.
+
+## TikHub failure contract
+
+Platform calls retry the same tool and arguments once after a short backoff. A failure with MCP-session evidence gets one final attempt after session refresh. HTTP 401 is never retried and is reported as a credential problem; HTTP 429 backs off without increasing concurrency. `can't start new thread` is treated as an upstream transient error and receives only the bounded retry.
+
+After retries are exhausted, TikHub is marked unavailable without changing its API key. Web Search or Jina results may be supplied only as clearly labeled secondary evidence and must never be represented as TikHub or platform-ground-truth data.
