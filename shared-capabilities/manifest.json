@@ -34,6 +34,12 @@
           "path": "shared-capabilities/patches/social-account-doctor/0004-xhs-app-v2-rest-primary.patch",
           "applies_to_commit": "88bb251248ca05d7e17c5eed6a7d3885d938180e",
           "description": "Route Xiaohongshu production actions through normalized Direct App V2 REST"
+        },
+        {
+          "id": "find-budget-stop-condition",
+          "path": "shared-capabilities/patches/social-account-doctor/0005-find-budget-stop-condition.patch",
+          "applies_to_commit": "88bb251248ca05d7e17c5eed6a7d3885d938180e",
+          "description": "Bound candidate find to two searches, stop at the requested count, and defer enrichment until owner selection"
         }
       ],
       "executables": [

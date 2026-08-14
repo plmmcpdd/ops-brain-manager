@@ -1,0 +1,355 @@
+diff --git a/SKILL.md b/SKILL.md
+index 9b332a1..576eaba 100644
+--- a/SKILL.md
++++ b/SKILL.md
+@@ -17,10 +17,13 @@ description: 小红书 / 抖音 / 快手 / 视频号 自媒体「(compose 素材
+ **H1 — find 必须有真对标搜索**
+ - `find` 模式至少跑过 1 次平台搜索，并拿到真实账号或作品候选：小红书 `tikhub xiaohongshu search_notes` / 抖音账号搜索或视频搜索 / 快手 `kuaishou_app_search_video_v2` / 视频号 `wechat_channels_fetch_search_ordinary` / B 站 `bilibili_web_fetch_general_search`。
+ - 只拿了我的账号信息或作品列表就写“对标结论” = 违规。没有对标搜索，就只能标成“仅基于我方数据的初步判断”。
++- **小红书候选请求先进入 `CANDIDATE_FIND`**：默认只做 1 次 `search_notes`；首次结果已有用户要求数量 N 的有效候选时，必须 `STOP SEARCHING` 并立即返回。只有不足 N 才允许 1 次补充搜索，正常硬上限为 2 次 `search_notes`。
++- `CANDIDATE_FIND` 禁止自动调用 `search_users`、账号信息、用户作品、详情、评论、视觉或视频分析。用户选中候选或明确要求额外信息后，才进入 `ENRICH / CRACK`。
++- 执行小红书 find 前必须读取 `references/find-budget-contract.json`；它是候选阶段预算、禁用 action 与 stop condition 的机器可检查 contract。
+ 
+ **H2 — 视觉判断必须先跑多模态**
+ - 报告里只要出现“封面模板 A/B/C/D/E”“大字比例”“真人出镜/实物展示/表格截图”“封面公式”“首帧钩子”等判断，就必须先用 `scripts/analyze_image.py` 分析本地封面/首帧。
+-- 我方账号诊断优先跑 top 3 + bottom 3；完整诊断最好覆盖近 7 条。对标可只跑 top 3，不能零调用。
++- 我方账号诊断优先跑 top 3 + bottom 3；完整诊断最好覆盖近 7 条。只有进入 `ENRICH / CRACK` 且要做视觉判断时才分析对标封面；`CANDIDATE_FIND` 默认视觉调用必须为 0。
+ - 报告正文必须嵌入我方/对标封面图，至少让用户能图文对照。无图的视觉诊断只能算口头评价。
+ 
+ **H3 — 半成品要显式标注**
+@@ -81,7 +84,9 @@ description: 小红书 / 抖音 / 快手 / 视频号 自媒体「(compose 素材
+ 
+ | 用户说什么 | 走哪个命令 |
+ |---|---|
+-| "找对标" / "我这个号有什么对标" / "扫一下同赛道" | **find** |
++| "找对标" / "先给 N 个候选" / "不要仿写" / "先看看值得研究的" | **CANDIDATE_FIND**（先返回候选并 STOP） |
++| "候选阶段判断评论区消费意图" | **CANDIDATE_FIND_WITH_INTENT** |
++| "深入看看这几个" / "拆第 2、4 条" | **ENRICH / crack**（仅处理用户选中项） |
+ | "拆这条爆款" / "这条为什么爆" / "提取这条的钩子" | **crack**（单条） |
+ | "对着这条仿写" / "下一条该怎么写" / "套这条的钩子写一条" | **crack + adapt** |
+ | "我想发 XX 主题，有什么参考" / "缺爆款选题" | **find + crack + adapt**（全闭环） |
+@@ -331,80 +336,50 @@ commerce-selection（选品 Top10）
+ 
+ ---
+ 
+-## 2. find 命令 SOP（5 步铁律）
++## 2. find 阶段合同（先候选，后深挖）
+ 
+-### 输入
+-我的账号链接 / 我的某条笔记链接 / 一个选题方向（"我想发 XX"）
+-
+-### 输出
+-5-10 个对标爆款链接 — **不是关键词搜出来的，是按内容本质过滤过的**。
++### 2.1 `CANDIDATE_FIND`（默认）
+ 
+-### 5 步（每一步都不能省）
++**触发**：用户说“找 N 个对标”“先给 N 个候选”“不要仿写/不要深入拆解”“先看看有哪些值得研究的”。未给 N 时默认 5，最多先返回 10。
+ 
+-#### Step 1 内容本质识别（必跑多模态）
++**唯一目标**：从真实平台搜索结果返回 N 个候选，然后停下来让 Owner 选择。这个阶段不是 deep research，也不落盘报告。
+ 
+-输入是我的账号 / 笔记 → 调 `analyze_image.py`（封面）+ `analyze_video.py`（视频）→ 提取 **5 个本质维度**：
++执行顺序：
+ 
+-| 维度 | 例子（橘猫做大酱那条） |
+-|---|---|
+-| 载体形态 | AI 拟人化小动物（不是真人 / 真宠物） |
+-| 情绪锚点 | 怀旧 / 家乡味道 / 童年记忆 |
+-| 审美风格 | 暖阳 + 慢镜头 + 烟火气 |
+-| 内容结构 | 教程类（原料 → 成品全流程） |
+-| **反差点** | **可爱角色 × 硬核农活**（核心爆点） |
++1. 从用户原话生成 **1 个 primary keyword**。优先保留用户明确给出的赛道词，不先扩展同义词矩阵。
++2. 只调用一次 `tikhub xiaohongshu search_notes --keyword <primary> --page 1`。
++3. 以 `note_id` 去重，过滤缺少可识别作品 ID 或明显不相关的项目；只能使用 `search_notes` 当前返回字段筛选。
++4. 若有效候选 `>= N`：取前 N 条，**STOP SEARCHING**，立即整理输出。
++5. 仅当有效候选 `< N` 时，允许再生成 **1 个 supplementary keyword** 并调用一次 `search_notes`。两次结果去重后取最多 N 条，然后无条件停止。
++6. 两次后仍不足 N：返回实际 X 条，并明确写“当前真实平台搜索只获得 X 个有效候选。”不得第三次搜索、不得改搜账号补数。
+ 
+-**输出**：5 个维度的描述（每个 1 句话）+ 形容词三元组（如：AI 萌宠 / 怀旧 / 反差教程）。
++默认预算：
+ 
+-#### Step 2 生成搜索词矩阵
++| action | normal target | hard limit |
++|---|---:|---:|
++| `search_notes` | 1 | 2 |
++| 其他 TikHub REST | 0 | 0 |
++| Visual / Video | 0 | 0 |
+ 
+-5 个本质维度交叉组合 → **4-6 个搜索词**：
+-
+-```
+-维度1：「AI萌宠」  / 「拟人猫」  / 「萌宠成精」
+-维度2：「乡村美食」/ 「老家味道」/ 「童年回忆」
+-维度3：「治愈」    / 「烟火气」
+-维度4：「教程」    / 「手作」
+-维度5：「反差萌」  / 「猫师傅」
+-```
++**候选阶段禁止自动调用**：`search_users`、`get_user_info`、`get_user_posted_notes`、`get_image_note_detail`、`get_video_note_detail`、`get_note_comments`、`get_note_sub_comments`、`analyze_image.py`、`analyze_video.py`。`search_notes` 已带作者信息时不得再查作者；缺少非关键字段就不展示，不能为补字段增加请求。
+ 
+-⚠️ **铁律**：搜索词 = **单一 2-4 字本质维度词**。
+-- 不要用宽泛选题词（"东北大酱"会搜出真人假对标）
+-- 不要带空格组合（"猫师傅 美食" 要拆成 4-6 个单词分次搜，便于结果归因）
++候选输出只使用真实返回中已有的字段：作者、标题、note ID/链接、点赞、评论、收藏、发布时间，以及一句基于标题/描述/互动数据的候选理由。拿不到的字段省略，不推测。
+ 
+-#### Step 3 矩阵词并行搜索
++**停止条件（生产硬规则）**：
+ 
+-每个矩阵词调一次 search → 按互动量倒序取 top 10 → 汇总到候选池（20-50 条，去重）。
++> 如果已经拥有用户要求数量 N 的有效候选：`STOP SEARCHING.` 立即输出。不得因为“也许还有更好的”“再看看账号”“补一点背景”继续调用 API。用户说“再找一批”才开启新一轮预算。
+ 
+-工具：
+-- 小红书 `tikhub xiaohongshu search_notes --keyword <词> --page 1`（CLI 内部固定走 Direct App V2 REST）
+-- 抖音优先 `douyin_billboard_fetch_hot_account_search_list --cursor 0` 找账号；再用 `douyin_app_v3_fetch_hashtag_search_result` → `douyin_app_v3_fetch_hashtag_video_list` 反查作者；`douyin_app_v3_fetch_video_search_result_v2` 只做补充且必须加超时
+-- 快手 `kuaishou_app_search_video_v2`
+-- 视频号 `wechat_channels_fetch_search_ordinary`（综合）+ `wechat_channels_fetch_search_latest`（最新）双源对比 — 见 §9.2
++### 2.2 `CANDIDATE_FIND_WITH_INTENT`（用户明确要求才进入）
+ 
+-**接口失败兜底**：adapter 的 bounded retry 耗尽后 → 不再硬刚，让用户手甩 3-5 个对标链接；小红书仍只走 App V2 detail。Web Search / Jina 如启用必须标为 `secondary evidence`，不得冒充平台实证。
++先完全按 `CANDIDATE_FIND` 选出最终候选，再只对这 N 条每条最多调用一次 top-level `get_note_comments`。不得查询未入选候选，不得拉 sub-comments、账号信息、用户作品或视觉，除非用户另外明确要求。
+ 
+-**视频号特殊铁律**：视频号客户端**不输出可复制的链接 / 视频 ID**（分享出去是卡片）。**唯一入口是账号名/关键词搜索 → 锁定本号视频 → 拿 id**。不要让用户提供"视频号链接"，他给不出。
+-
+-#### Step 4 多模态相似度过滤（必跑多模态）
+-
+-候选池每条抽首图 → `analyze_image.py` → 按 5 维打分（0-1）→ **≥ 3 维相似才留**。
+-
+-⚠️ **代价警告**：这一步 20-50 次 multimodal 调用，**token 不便宜，但不能省** — 否则 find 出来的全是表面假对标，后面 crack/adapt 全白做。
+-
+-#### Step 5 体量 + 活跃度过滤
+-
+-| 条件 | 标准 |
+-|---|---|
+-| 粉丝量 | 我 ×1 ~ ×10（伙伴/榜样档，删大佬级和小白级） |
+-| 近 30 天发文 | ≥ 8 条（不活跃删） |
+-| 单条互动 | ≥ 该号近 30 天均值 × 3（爆款不是日常） |
+-| 排除 | 官方蓝 V / 单条 100w+ 异常爆（不可复制） |
++预算：`search_notes <= 2`，`get_note_comments <= 最终候选数 N`，其他 enrichment 为 0，Visual 为 0（除非用户明确说“顺便看封面”）。
+ 
+-→ **输出 5-10 个真对标 + 每个贴一句"为什么是真对标"**（5 维相似度命中哪几维）。
++### 2.3 `ENRICH / CRACK`（Owner 选中后）
+ 
+-### find 的人工卡点
++只有用户明确选择“拆第 2、4 条”“深入看看这几个”或给出具体候选 ID/链接，才允许调用 detail、comments、sub-comments、user_info、user_posts、Visual 或 Video。调用范围只能是用户选中的项目；不得重新研究未选中候选，也不得重新跑候选搜索。
+ 
+-最后一步**必须**给用户看清单 → 用户勾选 3-5 条 → 没勾的不进 crack。
++人工卡点：`CANDIDATE_FIND` 返回清单 → **STOP** → Owner 选择 1–3 条 → 才进入 `ENRICH / CRACK`。
+ 
+ ---
+ 
+@@ -567,8 +542,8 @@ python3 ~/.claude/skills/social-account-doctor/scripts/render_report_pdf.py \
+ 
+ | 任务 | 小红书 | 抖音 | 快手 | B 站 |
+ |---|---|---|---|---|
+-| **find Step 3 关键词搜** | `tikhub xiaohongshu search_notes`（笔记） / `search_users`（用户） | `douyin_billboard_fetch_hot_account_search_list --cursor 0`（账号优先） / `douyin_app_v3_fetch_hashtag_search_result`（话题） / `douyin_app_v3_fetch_video_search_result_v2`（视频补充） | `kuaishou_app_search_video_v2` | `bilibili_web_fetch_general_search` |
+-| **find Step 5 账号信息** | `tikhub xiaohongshu get_user_info` | `douyin_web_handler_user_profile` | `kuaishou_app_fetch_one_user_v2` | `bilibili_web_fetch_user_profile` + `_user_up_stat` + `_user_relation_stat` |
++| **CANDIDATE_FIND 关键词搜** | `tikhub xiaohongshu search_notes`（最多 2 次；够 N 条立即 STOP） | `douyin_billboard_fetch_hot_account_search_list --cursor 0`（账号优先） / `douyin_app_v3_fetch_hashtag_search_result`（话题） / `douyin_app_v3_fetch_video_search_result_v2`（视频补充） | `kuaishou_app_search_video_v2` | `bilibili_web_fetch_general_search` |
++| **ENRICH 账号信息（仅选中项）** | `tikhub xiaohongshu get_user_info` | `douyin_web_handler_user_profile` | `kuaishou_app_fetch_one_user_v2` | `bilibili_web_fetch_user_profile` + `_user_up_stat` + `_user_relation_stat` |
+ | **crack 笔记/视频详情（最稳兜底）** | `tikhub xiaohongshu get_image_note_detail` / `get_video_note_detail` | `douyin_app_v3_fetch_one_video` | `kuaishou_app_fetch_one_video` | `bilibili_web_fetch_one_video` |
+ | **crack 拿封面/视频** | 用笔记详情返回的 `image_list` URL；不要用已挂的独立 image 接口 | `douyin_app_v3_fetch_video_high_quality_play_url` | `kuaishou_app_fetch_one_video`（含 play_url） | `bilibili_web_fetch_video_subtitle`（字幕拆口播） |
+ | **crack 拿评论** | `tikhub xiaohongshu get_note_comments` / `get_note_sub_comments` | `douyin_app_v3_fetch_video_comments` | `kuaishou_app_fetch_one_video_comment` | `bilibili_web_fetch_video_comments` + `_comment_reply` |
+@@ -743,20 +718,20 @@ tikhub kuaishou kuaishou_app_search_video_v2 --keyword Cursor --page 1
+ 
+ ---
+ 
+-1. **find 必须 5 步走**：本质识别 → 矩阵搜 → 多模态过滤 → 体量过滤 → 人工勾选。任何一步都不能省。
+-2. **不要单一宽泛词搜对标**（如"东北大酱"）。永远是 4-6 个本质维度词矩阵。
+-3. **search 关键词必须是单一中文词，2-4 字最稳，禁止空格组合**（拆成多个单词分次搜，便于结果归因）。
++1. **find 先分阶段**：普通“找 N 个候选”只走 `CANDIDATE_FIND`；候选够 N 条立即 STOP。用户选中后才进入 `ENRICH / CRACK`。
++2. **候选搜索不做矩阵扩张**：先用 1 个 primary keyword；不足 N 才允许 1 个 supplementary keyword。不得连续换同义词。
++3. **search 关键词优先沿用用户明确赛道词**；补充词只在首次不足时生成一次。`search_notes` 正常硬上限 2 次。
+ 4. **crack 输出 4 维钩子拆解**（视觉/文字/口播/剧情 + 综合权重），不是单句钩子。综合权重决定仿写时的精力分配。
+ 5. **adapt 必须命中 scoring-vocab.md 公式**，且必须标注"抄了什么 + 改了什么"。
+ 6. **诊断不主推**。除非用户明确说"为什么不爆"，否则不要走 L2。
+-7. **multimodal 不省**：find Step 1 看我的、find Step 4 看候选 — 都要调。token 贵但不能省。
++7. **候选阶段不跑 multimodal**：只有 Owner 选中候选，或明确说“顺便看封面/分析视频”，才进入 Visual / Video。
+    - 退化兜底：App V2 detail 无法取得封面时，只能基于 desc + 标签做文字层推断，**必须明文标 ⚪ 推断**；不得调用 obsolete Web family 补齐。
+ 8. **完整闭环跑完才落盘**，半成品只在对话里说。
+ 9. **钩子库要问过用户才追加**。crack 完成后主动问"要存吗"，用户答 yes 才写 `assets/hooks-{platform}.md`，按 4 维拆解格式存（不是单句）。**禁止自动追加**。
+ 10. **环境自检 + 缺失透明**（最重要的一条 — 防"伪装完成"）：
+ 
+    **开干前必做**：列出本次任务依赖的工具，逐个 ping。
+-   - `find` 依赖：tikhub CLI（`tikhub --health`）+ analyze_image.py + analyze_video.py
++   - `CANDIDATE_FIND` 依赖：tikhub CLI（`tikhub --health`）；默认不依赖 analyze_image.py / analyze_video.py
+    - `crack` 依赖：tikhub CLI（笔记/视频/评论详情）+ multimodal 脚本
+    - `adapt` 依赖：纯 LLM（无外部依赖）
+    - L2 完整诊断依赖：tikhub CLI（搜对标 + 账号信息）+ multimodal
+diff --git a/references/find-budget-contract.json b/references/find-budget-contract.json
+new file mode 100644
+index 0000000..c7a15d0
+--- /dev/null
++++ b/references/find-budget-contract.json
+@@ -0,0 +1,43 @@
++{
++  "version": 1,
++  "platform": "xiaohongshu",
++  "stages": {
++    "CANDIDATE_FIND": {
++      "default_requested_candidates": 5,
++      "maximum_initial_response_candidates": 10,
++      "normal_target_rest_calls": 1,
++      "budgets": {
++        "search_notes": 2,
++        "other_rest": 0,
++        "visual": 0
++      },
++      "allowed_actions": ["search_notes"],
++      "forbidden_actions": [
++        "search_users",
++        "get_user_info",
++        "get_user_posted_notes",
++        "get_image_note_detail",
++        "get_video_note_detail",
++        "get_note_comments",
++        "get_note_sub_comments",
++        "analyze_image",
++        "analyze_video"
++      ],
++      "stop_when_candidate_count_reaches_requested": true,
++      "return_partial_after_budget_exhaustion": true,
++      "deduplicate_by": "note_id"
++    },
++    "CANDIDATE_FIND_WITH_INTENT": {
++      "inherits": "CANDIDATE_FIND",
++      "comments_per_final_candidate": 1,
++      "comments_scope": "final_candidates_only",
++      "other_enrichment": 0,
++      "visual": 0
++    },
++    "ENRICH_CRACK": {
++      "requires_explicit_owner_selection": true,
++      "scope": "selected_items_only",
++      "rerun_candidate_search": false
++    }
++  }
++}
+diff --git a/references/platforms/xiaohongshu.md b/references/platforms/xiaohongshu.md
+index 5d82e2e..ac6cb30 100644
+--- a/references/platforms/xiaohongshu.md
++++ b/references/platforms/xiaohongshu.md
+@@ -179,9 +179,11 @@ REST adapter 统一返回：`provider`（HTTP/code/request_id）、`items` 或 `
+ 5. top 3 + bottom 3 → get_image_note_detail / get_video_note_detail
+ 6. 对 top 3 + bottom 3 → scripts/analyze_image.py 拆封面 5 变量
+ 7. 对 top 3 → get_note_comments（提炼痛点）
+-8. search_notes / search_users → 找对标候选
++8. 若任务是完整账号诊断，按诊断范围使用 search_notes / search_users 补充账号级证据
+ ```
+ 
++普通“找 N 个真实候选”不执行上面的账号诊断链，必须遵循 `references/find-budget-contract.json`：先调用 1 次 `search_notes`，够 N 条立即停止；不足才允许第 2 次。候选阶段不调用 `search_users`、账号/详情/评论或视觉 action。
++
+ ---
+ 
+ ## 5. 小红书版六维评分细则
+diff --git a/tests/test_find_budget_contract.py b/tests/test_find_budget_contract.py
+new file mode 100644
+index 0000000..2c0c104
+--- /dev/null
++++ b/tests/test_find_budget_contract.py
+@@ -0,0 +1,108 @@
++import json
++from pathlib import Path
++
++
++ROOT = Path(__file__).resolve().parents[1]
++CONTRACT_PATH = ROOT / "references" / "find-budget-contract.json"
++SKILL_PATH = ROOT / "SKILL.md"
++
++
++def load_contract():
++    return json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))
++
++
++def candidate_find(result_batches, requested, *, with_intent=False):
++    contract = load_contract()["stages"]["CANDIDATE_FIND"]
++    candidates = []
++    seen = set()
++    search_calls = 0
++    for batch in result_batches[: contract["budgets"]["search_notes"]]:
++        search_calls += 1
++        for item in batch:
++            note_id = item.get("note_id")
++            if note_id and note_id not in seen and item.get("relevant", True):
++                seen.add(note_id)
++                candidates.append(item)
++        if len(candidates) >= requested:
++            break
++    final = candidates[:requested]
++    return {
++        "search_notes": search_calls,
++        "search_users": 0,
++        "get_user_info": 0,
++        "detail": 0,
++        "comments": [item["note_id"] for item in final] if with_intent else [],
++        "visual": 0,
++        "candidates": final,
++        "insufficient": len(final) < requested,
++        "stopped": True,
++    }
++
++
++def items(count, start=0):
++    return [{"note_id": f"note-{index}", "relevant": True} for index in range(start, start + count)]
++
++
++def test_case_a_first_search_has_twenty_return_five_and_stop():
++    result = candidate_find([items(20)], 5)
++    assert result == {
++        "search_notes": 1,
++        "search_users": 0,
++        "get_user_info": 0,
++        "detail": 0,
++        "comments": [],
++        "visual": 0,
++        "candidates": items(5),
++        "insufficient": False,
++        "stopped": True,
++    }
++
++
++def test_case_b_three_then_supplementary_never_exceeds_two_searches():
++    result = candidate_find([items(3), items(4, start=3), items(20, start=7)], 5)
++    assert result["search_notes"] == 2
++    assert len(result["candidates"]) == 5
++    assert result["insufficient"] is False
++    assert result["stopped"] is True
++
++
++def test_case_c_two_searches_return_four_and_mark_insufficient():
++    result = candidate_find([items(2), items(2, start=2), items(20, start=4)], 5)
++    assert result["search_notes"] == 2
++    assert len(result["candidates"]) == 4
++    assert result["insufficient"] is True
++    assert result["stopped"] is True
++
++
++def test_case_d_intent_comments_only_target_final_candidates():
++    result = candidate_find([items(20)], 5, with_intent=True)
++    assert result["search_notes"] == 1
++    assert result["comments"] == [f"note-{index}" for index in range(5)]
++    assert result["detail"] == 0
++    assert result["visual"] == 0
++
++
++def test_case_e_enrichment_is_selected_items_only_without_new_search():
++    stage = load_contract()["stages"]["ENRICH_CRACK"]
++    candidate_ids = [f"note-{index}" for index in range(1, 6)]
++    selected = [candidate_ids[index - 1] for index in (2, 4)]
++    assert selected == ["note-2", "note-4"]
++    assert stage["requires_explicit_owner_selection"] is True
++    assert stage["scope"] == "selected_items_only"
++    assert stage["rerun_candidate_search"] is False
++
++
++def test_contract_budget_and_production_instructions_are_explicit():
++    contract = load_contract()["stages"]["CANDIDATE_FIND"]
++    assert contract["normal_target_rest_calls"] == 1
++    assert contract["budgets"] == {"search_notes": 2, "other_rest": 0, "visual": 0}
++    assert contract["allowed_actions"] == ["search_notes"]
++    assert contract["stop_when_candidate_count_reaches_requested"] is True
++
++    skill = SKILL_PATH.read_text(encoding="utf-8")
++    assert "references/find-budget-contract.json" in skill
++    assert "STOP SEARCHING" in skill
++    assert "CANDIDATE_FIND_WITH_INTENT" in skill
++    assert "ENRICH / CRACK" in skill
++    assert "矩阵词并行搜索" not in skill
++    assert "候选池每条抽首图" not in skill

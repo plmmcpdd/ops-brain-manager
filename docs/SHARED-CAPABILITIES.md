@@ -7,7 +7,7 @@ The authoritative distribution definition is `shared-capabilities/manifest.json`
 Install on a new runtime:
 
 1. Clone the manifest `source` into a trusted tools directory and checkout the exact `pinned_commit`.
-2. Apply every `local_patches` entry, in manifest order, from the Ops Brain repository root. For the current capability, apply `0001-doubao-ark-chat-url.patch`, `0002-visual-batch-performance.patch`, `0003-tikhub-failure-policy.patch`, then `0004-xhs-app-v2-rest-primary.patch`.
+2. Apply every `local_patches` entry, in manifest order, from the Ops Brain repository root. For the current capability, apply `0001-doubao-ark-chat-url.patch`, `0002-visual-batch-performance.patch`, `0003-tikhub-failure-policy.patch`, `0004-xhs-app-v2-rest-primary.patch`, then `0005-find-budget-stop-condition.patch`.
 3. Run `bash install_as_skill.sh --target claude`. On an externally managed Python, use a user-scoped package configuration rather than sudo.
 4. Put required and optional secrets in the installed Skill's `.env`, mode `0600`. Never store them in this repository, the customer Registry, `runtime.json`, or customer workspaces.
 5. Restart Claude Code and run `python3 ops_brain.py capabilities --json`.
@@ -60,3 +60,11 @@ Xiaohongshu REST classifies HTTP 401 as `credential_problem` without retry, HTTP
 After retries are exhausted, TikHub is marked unavailable without changing its API key. Web Search or Jina results may be supplied only as clearly labeled secondary evidence and must never be represented as TikHub or platform-ground-truth data.
 
 Capability diagnostics intentionally separate `XHS App V2 REST` from optional `TikHub MCP`. A degraded MCP transport does not degrade `social-account-doctor` while required XHS REST and dependencies are ready. Optional unconfigured audio is reported as `OPTIONAL_NOT_CONFIGURED`, not as a capability failure.
+
+## Candidate find budget
+
+A plain request for N Xiaohongshu benchmark candidates enters `CANDIDATE_FIND`, not deep research. The Agent makes one primary `search_notes` request and stops immediately when it has N valid candidates. Only an insufficient first result permits one supplementary `search_notes`; two searches are the hard normal limit.
+
+Candidate find performs no user search, account lookup, user-post lookup, detail, comments, or visual analysis. The only exception is an explicit `CANDIDATE_FIND_WITH_INTENT` request, which may fetch top-level comments once for each final candidate after candidate selection. Detail, account research, sub-comments, visual, and video belong to `ENRICH / CRACK` and apply only to items explicitly selected by the Owner.
+
+The Agent-visible and machine-tested contract is installed as `references/find-budget-contract.json`. If two searches yield fewer than N candidates, return the actual count and state that the platform search was insufficient; never make a third search merely to fill the list.
