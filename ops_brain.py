@@ -615,9 +615,12 @@ def capabilities_report(manifest_path: Path = CAPABILITY_MANIFEST) -> dict[str, 
         config = install / capability["configuration_file"]
         configured = _configured_keys(config)
         dependencies: dict[str, str] = {}
+        required_dependencies: set[str] = set()
         for dependency in capability.get("executables", []):
             if isinstance(dependency, str):
                 dependency = {"id": dependency, "command": dependency}
+            if dependency.get("required", True):
+                required_dependencies.add(dependency["id"])
             path = dependency.get("path")
             ready = (
                 Path(path).expanduser().is_file() and os.access(Path(path).expanduser(), os.X_OK)
@@ -629,18 +632,22 @@ def capabilities_report(manifest_path: Path = CAPABILITY_MANIFEST) -> dict[str, 
         for component in component_sources:
             missing_keys = [key for key in component.get("config_keys", []) if key not in configured]
             missing_tools = [name for name in component.get("executables", []) if dependencies.get(name) != "READY"]
-            status = "NOT_CONFIGURED" if missing_keys else ("MISSING" if missing_tools else "READY")
+            if component.get("status_override"):
+                status = component["status_override"]
+            elif missing_keys:
+                status = "NOT_CONFIGURED" if component.get("required", False) else "OPTIONAL_NOT_CONFIGURED"
+            elif missing_tools:
+                status = "MISSING" if component.get("required", False) else "OPTIONAL_MISSING"
+            else:
+                status = "READY"
             components.append({"id": component["id"], "status": status})
         required_bad = any(
             item["status"] != "READY" and source.get("required", False)
             for item, source in zip(components, component_sources)
         )
-        optional_bad = any(item["status"] != "READY" for item in components)
         if not (install / "SKILL.md").is_file():
             status = "MISSING"
-        elif required_bad or any(value == "MISSING" for value in dependencies.values()):
-            status = "DEGRADED"
-        elif optional_bad:
+        elif required_bad or any(dependencies.get(name) == "MISSING" for name in required_dependencies):
             status = "DEGRADED"
         else:
             status = "READY"

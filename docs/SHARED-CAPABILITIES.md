@@ -7,7 +7,7 @@ The authoritative distribution definition is `shared-capabilities/manifest.json`
 Install on a new runtime:
 
 1. Clone the manifest `source` into a trusted tools directory and checkout the exact `pinned_commit`.
-2. Apply every `local_patches` entry, in manifest order, from the Ops Brain repository root. For the current capability, apply `0001-doubao-ark-chat-url.patch`, `0002-visual-batch-performance.patch`, then `0003-tikhub-failure-policy.patch`.
+2. Apply every `local_patches` entry, in manifest order, from the Ops Brain repository root. For the current capability, apply `0001-doubao-ark-chat-url.patch`, `0002-visual-batch-performance.patch`, `0003-tikhub-failure-policy.patch`, then `0004-xhs-app-v2-rest-primary.patch`.
 3. Run `bash install_as_skill.sh --target claude`. On an externally managed Python, use a user-scoped package configuration rather than sudo.
 4. Put required and optional secrets in the installed Skill's `.env`, mode `0600`. Never store them in this repository, the customer Registry, `runtime.json`, or customer workspaces.
 5. Restart Claude Code and run `python3 ops_brain.py capabilities --json`.
@@ -41,6 +41,22 @@ The launcher also adds `~/.local/bin` to `PATH` and loads each manifest-declared
 
 ## TikHub failure contract
 
-Platform calls retry the same tool and arguments once after a short backoff. A failure with MCP-session evidence gets one final attempt after session refresh. HTTP 401 is never retried and is reported as a credential problem; HTTP 429 backs off without increasing concurrency. `can't start new thread` is treated as an upstream transient error and receives only the bounded retry.
+Xiaohongshu production calls use the stable `tikhub xiaohongshu <action>` adapter and Direct App V2 REST. Configure the runtime, not customer workspaces:
+
+```dotenv
+TIKHUB_XHS_TRANSPORT=rest
+TIKHUB_REST_BASE_URL=https://api.tikhub.io
+TIKHUB_REST_TIMEOUT_SECONDS=45
+```
+
+Use `https://api.tikhub.dev` for a verified mainland runtime when appropriate. Both hosts use the existing `TIKHUB_API_KEY`; no second credential is introduced. Implemented actions are `search_notes`, `search_users`, `get_user_posted_notes`, `get_image_note_detail`, `get_video_note_detail`, `get_note_comments`, `get_note_sub_comments`, and `get_user_info`.
+
+For Xiaohongshu, App V1, Web V2, and Web V3 are obsolete production routes and are filtered from CLI discovery. MCP remains available for other platforms and as an optional App V2 diagnostic transport; it is not the Xiaohongshu production primary. A successful REST call does not also call MCP.
+
+MCP platform calls retry the same tool and arguments once after a short backoff. A failure with MCP-session evidence gets one final attempt after session refresh. `can't start new thread` is treated as an upstream transient error and receives only the bounded MCP retry.
+
+Xiaohongshu REST classifies HTTP 401 as `credential_problem` without retry, HTTP 429 as `rate_limited` with one bounded backoff, other 4xx as `request_error`, 5xx/connection/timeouts as `transient` with one bounded retry, and successful HTTP responses with a non-success provider code as `provider_error`. Exhaustion returns `layer=TikHub`, `platform=xiaohongshu`, `transport=rest`, and `status=unavailable`; REST errors never trigger obsolete XHS routes.
 
 After retries are exhausted, TikHub is marked unavailable without changing its API key. Web Search or Jina results may be supplied only as clearly labeled secondary evidence and must never be represented as TikHub or platform-ground-truth data.
+
+Capability diagnostics intentionally separate `XHS App V2 REST` from optional `TikHub MCP`. A degraded MCP transport does not degrade `social-account-doctor` while required XHS REST and dependencies are ready. Optional unconfigured audio is reported as `OPTIONAL_NOT_CONFIGURED`, not as a capability failure.

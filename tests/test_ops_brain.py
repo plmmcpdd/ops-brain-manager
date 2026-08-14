@@ -476,10 +476,10 @@ class SharedCapabilityTests(unittest.TestCase):
         report = ops_brain.capabilities_report(self.manifest)
         self.assertEqual(report["core_health"], "SEPARATE")
         capability = report["capabilities"][0]
-        self.assertEqual(capability["status"], "DEGRADED")
+        self.assertEqual(capability["status"], "READY")
         self.assertEqual(capability["components"], [
             {"id": "Data", "status": "READY"},
-            {"id": "Visual", "status": "NOT_CONFIGURED"},
+            {"id": "Visual", "status": "OPTIONAL_NOT_CONFIGURED"},
         ])
         self.assertNotIn(secret, json.dumps(report))
 
@@ -504,8 +504,23 @@ class SharedCapabilityTests(unittest.TestCase):
         components = ops_brain.capabilities_report(self.manifest)["capabilities"][0]["components"]
         self.assertEqual(components, [
             {"id": "Data", "status": "NOT_CONFIGURED"},
-            {"id": "Visual", "status": "NOT_CONFIGURED"},
+            {"id": "Visual", "status": "OPTIONAL_NOT_CONFIGURED"},
         ])
+
+    def test_optional_degraded_transport_is_visible_without_degrading_capability(self):
+        self.write_manifest()
+        data = json.loads(self.manifest.read_text(encoding="utf-8"))
+        data["capabilities"][0]["components"].append({
+            "id": "MCP", "required": False, "config_keys": [], "executables": [],
+            "status_override": "DEGRADED",
+        })
+        self.manifest.write_text(json.dumps(data), encoding="utf-8")
+        self.install.mkdir()
+        (self.install / "SKILL.md").write_text("name: test", encoding="utf-8")
+        (self.install / ".env").write_text("DATA_KEY=configured\n", encoding="utf-8")
+        capability = ops_brain.capabilities_report(self.manifest)["capabilities"][0]
+        self.assertEqual(capability["status"], "READY")
+        self.assertIn({"id": "MCP", "status": "DEGRADED"}, capability["components"])
 
 
 class ExternalIntegrityTests(unittest.TestCase):

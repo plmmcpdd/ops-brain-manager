@@ -1,0 +1,1147 @@
+diff --git a/.env.example b/.env.example
+index 58e8432..7ee42a9 100644
+--- a/.env.example
++++ b/.env.example
+@@ -31,3 +31,7 @@ AUDIO_TRANSCRIPTION_TIMEOUT_SECONDS=600
+ # Apply at: https://tikhub.io/
+ # =============================================================
+ TIKHUB_API_KEY=your-tikhub-key
++TIKHUB_XHS_TRANSPORT=rest
++# Mainland China: https://api.tikhub.dev ; outside mainland: https://api.tikhub.io
++TIKHUB_REST_BASE_URL=https://api.tikhub.io
++TIKHUB_REST_TIMEOUT_SECONDS=45
+diff --git a/SKILL.md b/SKILL.md
+index eed96d3..9b332a1 100644
+--- a/SKILL.md
++++ b/SKILL.md
+@@ -15,7 +15,7 @@ description: 小红书 / 抖音 / 快手 / 视频号 自媒体「(compose 素材
+ 这些规则适用于 find / crack / adapt / diagnostic。违反时不要硬写报告；在对话里明说缺哪一步、为什么缺、用户可以怎么补。
+ 
+ **H1 — find 必须有真对标搜索**
+-- `find` 模式至少跑过 1 次平台搜索，并拿到真实账号或作品候选：小红书 `xiaohongshu_app_search_notes` / 抖音账号搜索或视频搜索 / 快手 `kuaishou_app_search_video_v2` / 视频号 `wechat_channels_fetch_search_ordinary` / B 站 `bilibili_web_fetch_general_search`。
++- `find` 模式至少跑过 1 次平台搜索，并拿到真实账号或作品候选：小红书 `tikhub xiaohongshu search_notes` / 抖音账号搜索或视频搜索 / 快手 `kuaishou_app_search_video_v2` / 视频号 `wechat_channels_fetch_search_ordinary` / B 站 `bilibili_web_fetch_general_search`。
+ - 只拿了我的账号信息或作品列表就写“对标结论” = 违规。没有对标搜索，就只能标成“仅基于我方数据的初步判断”。
+ 
+ **H2 — 视觉判断必须先跑多模态**
+@@ -369,19 +369,19 @@ commerce-selection（选品 Top10）
+ 
+ ⚠️ **铁律**：搜索词 = **单一 2-4 字本质维度词**。
+ - 不要用宽泛选题词（"东北大酱"会搜出真人假对标）
+-- 不要带空格组合（"猫师傅 美食" 在 V1/V2 接口会 HTTPStatusError，要拆成 4-6 个单词分次搜）
++- 不要带空格组合（"猫师傅 美食" 要拆成 4-6 个单词分次搜，便于结果归因）
+ 
+ #### Step 3 矩阵词并行搜索
+ 
+ 每个矩阵词调一次 search → 按互动量倒序取 top 10 → 汇总到候选池（20-50 条，去重）。
+ 
+ 工具：
+-- 小红书 `xiaohongshu_app_search_notes`（**只用这个**，V2/Web V2 全挂 — 见 §9.1）
++- 小红书 `tikhub xiaohongshu search_notes --keyword <词> --page 1`（CLI 内部固定走 Direct App V2 REST）
+ - 抖音优先 `douyin_billboard_fetch_hot_account_search_list --cursor 0` 找账号；再用 `douyin_app_v3_fetch_hashtag_search_result` → `douyin_app_v3_fetch_hashtag_video_list` 反查作者；`douyin_app_v3_fetch_video_search_result_v2` 只做补充且必须加超时
+ - 快手 `kuaishou_app_search_video_v2`
+ - 视频号 `wechat_channels_fetch_search_ordinary`（综合）+ `wechat_channels_fetch_search_latest`（最新）双源对比 — 见 §9.2
+ 
+-**接口失败兜底**：连续 3 次 retry 失败 → 不再硬刚，让用户手甩 3-5 个对标链接 → 直接 `fetch_feed_notes_v2`（小红书）/ `fetch_video_detail`（视频号）→ 跳到 crack。
++**接口失败兜底**：adapter 的 bounded retry 耗尽后 → 不再硬刚，让用户手甩 3-5 个对标链接；小红书仍只走 App V2 detail。Web Search / Jina 如启用必须标为 `secondary evidence`，不得冒充平台实证。
+ 
+ **视频号特殊铁律**：视频号客户端**不输出可复制的链接 / 视频 ID**（分享出去是卡片）。**唯一入口是账号名/关键词搜索 → 锁定本号视频 → 拿 id**。不要让用户提供"视频号链接"，他给不出。
+ 
+@@ -567,13 +567,13 @@ python3 ~/.claude/skills/social-account-doctor/scripts/render_report_pdf.py \
+ 
+ | 任务 | 小红书 | 抖音 | 快手 | B 站 |
+ |---|---|---|---|---|
+-| **find Step 3 关键词搜** | `xiaohongshu_app_search_notes`（笔记） / `xiaohongshu_web_search_users`（用户） | `douyin_billboard_fetch_hot_account_search_list --cursor 0`（账号优先） / `douyin_app_v3_fetch_hashtag_search_result`（话题） / `douyin_app_v3_fetch_video_search_result_v2`（视频补充） | `kuaishou_app_search_video_v2` | `bilibili_web_fetch_general_search` |
+-| **find Step 5 账号信息** | `xiaohongshu_app_get_user_info` | `douyin_web_handler_user_profile` | `kuaishou_app_fetch_one_user_v2` | `bilibili_web_fetch_user_profile` + `_user_up_stat` + `_user_relation_stat` |
+-| **crack 笔记/视频详情（最稳兜底）** | `xiaohongshu_app_get_note_info`（需 xsec_token） / `xiaohongshu_web_get_note_info_v7` | `douyin_app_v3_fetch_one_video` | `kuaishou_app_fetch_one_video` | `bilibili_web_fetch_one_video` |
++| **find Step 3 关键词搜** | `tikhub xiaohongshu search_notes`（笔记） / `search_users`（用户） | `douyin_billboard_fetch_hot_account_search_list --cursor 0`（账号优先） / `douyin_app_v3_fetch_hashtag_search_result`（话题） / `douyin_app_v3_fetch_video_search_result_v2`（视频补充） | `kuaishou_app_search_video_v2` | `bilibili_web_fetch_general_search` |
++| **find Step 5 账号信息** | `tikhub xiaohongshu get_user_info` | `douyin_web_handler_user_profile` | `kuaishou_app_fetch_one_user_v2` | `bilibili_web_fetch_user_profile` + `_user_up_stat` + `_user_relation_stat` |
++| **crack 笔记/视频详情（最稳兜底）** | `tikhub xiaohongshu get_image_note_detail` / `get_video_note_detail` | `douyin_app_v3_fetch_one_video` | `kuaishou_app_fetch_one_video` | `bilibili_web_fetch_one_video` |
+ | **crack 拿封面/视频** | 用笔记详情返回的 `image_list` URL；不要用已挂的独立 image 接口 | `douyin_app_v3_fetch_video_high_quality_play_url` | `kuaishou_app_fetch_one_video`（含 play_url） | `bilibili_web_fetch_video_subtitle`（字幕拆口播） |
+-| **crack 拿评论** | `xiaohongshu_app_get_note_comments` | `douyin_app_v3_fetch_video_comments` | `kuaishou_app_fetch_one_video_comment` | `bilibili_web_fetch_video_comments` + `_comment_reply` |
++| **crack 拿评论** | `tikhub xiaohongshu get_note_comments` / `get_note_sub_comments` | `douyin_app_v3_fetch_video_comments` | `kuaishou_app_fetch_one_video_comment` | `bilibili_web_fetch_video_comments` + `_comment_reply` |
+ | **B 站独家：弹幕** | — | — | — | `bilibili_web_fetch_video_danmaku`（4 类信号见 platforms/bilibili.md §3） |
+-| **解析分享链接** | `xiaohongshu_web_get_note_id_and_xsec_token` | `douyin_app_v3_fetch_one_video_by_share_url` | `kuaishou_web_fetch_one_video_by_url` | `bilibili_web_bv_to_aid`（bv ↔ aid 转换） |
++| **解析分享链接** | 把分享文本直接传给 App V2 action 的 `share_text` | `douyin_app_v3_fetch_one_video_by_share_url` | `kuaishou_web_fetch_one_video_by_url` | `bilibili_web_bv_to_aid`（bv ↔ aid 转换） |
+ 
+ ### 视频号（独立路径 — 没分享链接）
+ 
+@@ -637,38 +637,33 @@ B 站是 16:9 横屏 + 长视频文化，**算法核心信号是三连率（点
+ 
+ ## 9. 接口稳定性表（按平台分小节）
+ 
+-### 9.1 小红书（**复测 2026-04-23 — 用户作品列表切 Web V2 `fetch_home_notes_app`；其余 App V1 首选**）
+-
+-> ⚠️ **2026-04-23 增量更新**：用户作品列表的 App V1 (`xiaohongshu_app_get_user_notes`) 复测也挂，`app_v2_get_user_posted_notes` 仍挂。当前只有 `xiaohongshu_web_v2_fetch_home_notes_app` 能跑通并拿到 cover / title / like / collect。虽然官方说 Web V2 停止维护，但这一行目前没得选。
+->
+-> ⚠️ **旧结论（2026-04-22）**：除用户作品列表外，search / note_info / comments / user_info 仍优先用 App V1。App V2 全系列实测 RetryError；Web V2 能用的也按“备用、随时可能挂”处理。
+->
+-> **官方明确弃用**：`xiaohongshu_app_search_notes_v2`、`xiaohongshu_app_get_video_note_info`、`xiaohongshu_app_get_notes_by_topic`、`xiaohongshu_app_search_users`。见到这些不要用。
+-
+-| 任务 | ✅ 首选 | ⚠️ 备选 | ❌ 不要用 |
+-|---|---|---|---|
+-| **关键词搜笔记** | `xiaohongshu_app_search_notes` | `xiaohongshu_web_search_notes`（Web V1，限流时切） | `app_v2_search_notes` / `web_v2_fetch_search_notes` / `app_search_notes_v2` |
+-| **关键词搜用户** | — | `xiaohongshu_web_search_users`（Web V1，唯一能用） | `app_search_users` / `app_v2_search_users` / `web_v2_fetch_search_users` |
+-| **笔记详情** | `xiaohongshu_app_get_note_info`（需 `xsec_token`） | `xiaohongshu_web_get_note_info_v7` / `xiaohongshu_web_v2_fetch_feed_notes_v2`（备用） | `app_v2_get_image_note_detail` / `app_v2_get_video_note_detail` |
+-| **笔记评论** | `xiaohongshu_app_get_note_comments` | `xiaohongshu_web_v2_fetch_note_comments`（备用） | `app_v2_get_note_comments` |
+-| **二级评论** | `xiaohongshu_app_get_sub_comments` | `xiaohongshu_web_v2_fetch_sub_comments`（备用） | `app_v2_get_note_sub_comments` |
+-| **账号信息** | `xiaohongshu_app_get_user_info` | — | `app_v2_get_user_info` / `web_get_user_info_v2` |
+-| **用户作品列表** | `xiaohongshu_web_v2_fetch_home_notes_app`（2026-04-23 唯一能用） | — | `xiaohongshu_app_get_user_notes` / `app_v2_get_user_posted_notes` / `web_v2_fetch_home_notes` |
+-| **拿封面/图片** | 用 `app_get_note_info` / `web_get_note_info_v7` 返回里的 `image_list` URL | — | `web_v2_fetch_note_image` |
+-| **分享链接解析** | `xiaohongshu_web_get_note_id_and_xsec_token` | `xiaohongshu_app_extract_share_info` / `app_get_user_id_and_xsec_token` | — |
++### 9.1 小红书（**复测 2026-08-14 — Direct App V2 REST production baseline**）
++
++> 生产 transport 是 `tikhub` CLI 内部的 Direct TikHub App V2 REST。中国大陆配置 `TIKHUB_REST_BASE_URL=https://api.tikhub.dev`；其他地区使用 `https://api.tikhub.io`。Agent 不手写 curl，也不读取 Authorization header。
++
++| 任务 | 正式 action |
++|---|---|
++| **关键词搜笔记** | `tikhub xiaohongshu search_notes --keyword <词> --page 1` |
++| **关键词搜用户** | `tikhub xiaohongshu search_users --keyword <词> --page 1` |
++| **笔记详情** | `get_image_note_detail` / `get_video_note_detail`（传 `note_id` 或 `share_text`） |
++| **笔记评论** | `get_note_comments` |
++| **二级评论** | `get_note_sub_comments` |
++| **账号信息** | `get_user_info` |
++| **用户作品列表** | `get_user_posted_notes` |
+ 
+ **铁律**：
+-- ✅ search / note_info / comments / user_info 首选 App V1；用户作品列表目前只用 `web_v2_fetch_home_notes_app`
+-- ⚠️ Web V2 官方说停止维护，只在 App V1 挂且没替代时用；报告里标注“备用接口，数据可能延迟或随时下线”
+-- ❌ App V2 全系列实测挂，不要再试
+-- ❌ 同一接口连续 3 次 HTTPStatusError → 换备选 / 让用户截图代替
+-- ❌ 小红书不支持按话题标签搜索笔记，只支持关键词；用户问“搜 #XX 标签”时说明限制
+-- 📅 实测日期写在标题里，3 个月后必须重测一次
+-
+-**并发与限流（实测 2026-04-21）**：
+-- **当前 tikhub RPS 上限 = 10/s**（用户提供）—— 单次诊断的搜索批量调用要节制,**建议并发不超过 3,串行更稳**
+-- 触发限流时返回 `RetryError[HTTPStatusError]`（与"接口本身不稳"的报错一样,容易误判）
+-- App V1 (`xiaohongshu_app_search_notes`) 限流后冷却时间长；**Web V1 (`xiaohongshu_web_search_notes`) 抗限流更强**,App V1 被限时优先切 Web V1（同样是 V1，不是 V2）
++- ✅ Xiaohongshu production family = App V2 only；正常成功时不额外调用 MCP。
++- ✅ REST 返回由 adapter normalization 为 `items/data + pagination + provider metadata`，保留 follow-up 所需原始 ID。
++- ❌ App V1 / Web V2 / Web V3 不作为生产候选，不得从 cached catalog 选择。
++- ⚠️ MCP 只保留 App V2 diagnostic/optional secondary transport；`can't start new thread` 属于 MCP failure policy，不进入 REST handler。
++- ⚠️ REST unavailable 后必须标注“部分（缺 TikHub 小红书平台数据）”；Web Search / Jina 只能标 `secondary evidence`。
++- ❌ 小红书不支持按话题标签搜索笔记，只支持关键词；用户问“搜 #XX 标签”时说明限制。
++
++**限流与错误**：
++- HTTP 401 = `credential_problem`，不重试、不改 Key。
++- HTTP 429 = `rate_limited`，bounded backoff，不提高并发。
++- 其他 4xx = `request_error`；5xx / timeout / connection = `transient`，原请求最多重试 1 次。
++- HTTP 成功但 provider code 非成功 = `provider_error`，不得伪装成空结果。
+ 
+ ### 9.2 视频号（实测 2026-04-21）
+ 
+@@ -750,12 +745,12 @@ tikhub kuaishou kuaishou_app_search_video_v2 --keyword Cursor --page 1
+ 
+ 1. **find 必须 5 步走**：本质识别 → 矩阵搜 → 多模态过滤 → 体量过滤 → 人工勾选。任何一步都不能省。
+ 2. **不要单一宽泛词搜对标**（如"东北大酱"）。永远是 4-6 个本质维度词矩阵。
+-3. **search 关键词必须是单一中文词，2-4 字最稳，禁止空格组合**（带空格的组合词在 V1/V2 接口都易 HTTPStatusError — 拆成多个单词分次搜更稳）。
++3. **search 关键词必须是单一中文词，2-4 字最稳，禁止空格组合**（拆成多个单词分次搜，便于结果归因）。
+ 4. **crack 输出 4 维钩子拆解**（视觉/文字/口播/剧情 + 综合权重），不是单句钩子。综合权重决定仿写时的精力分配。
+ 5. **adapt 必须命中 scoring-vocab.md 公式**，且必须标注"抄了什么 + 改了什么"。
+ 6. **诊断不主推**。除非用户明确说"为什么不爆"，否则不要走 L2。
+ 7. **multimodal 不省**：find Step 1 看我的、find Step 4 看候选 — 都要调。token 贵但不能省。
+-   - 退化兜底：当 `fetch_note_image` 不可用时，可以用 `feed_notes_v2` 返回里的 `video_info_v2.media.video.bbox.ocr_v2/v3` 字段（含封面文字位置）+ desc + 标签推断封面公式，**必须明文标 ⚪ 推断 / 🟢 高可信**。
++   - 退化兜底：App V2 detail 无法取得封面时，只能基于 desc + 标签做文字层推断，**必须明文标 ⚪ 推断**；不得调用 obsolete Web family 补齐。
+ 8. **完整闭环跑完才落盘**，半成品只在对话里说。
+ 9. **钩子库要问过用户才追加**。crack 完成后主动问"要存吗"，用户答 yes 才写 `assets/hooks-{platform}.md`，按 4 维拆解格式存（不是单句）。**禁止自动追加**。
+ 10. **环境自检 + 缺失透明**（最重要的一条 — 防"伪装完成"）：
+@@ -781,11 +776,13 @@ tikhub kuaishou kuaishou_app_search_video_v2 --keyword Cursor --page 1
+    - 跑了 1/3 不能说"诊断完成"
+    - 跑完后必须明文标注：「本次只完成 Layer X，因为 Y 工具不可用 / Y 数据缺失」
+    - **半成品不写盘**（不污染 reports/ 目录）
+-   - 接口连续 3 次 retry 失败 → 视同工具不可用 → 进入上面的话术
++   - adapter 的 bounded retry 耗尽 → 视同对应 transport 不可用 → 进入上面的话术
+ 
+ 11. **tikhub 调用走 CLI，不走 `claude mcp add`**：所有 tikhub 数据抓取通过 `tikhub <platform> <tool> --args` CLI 命令调用。**CLI 自包含在仓库 `tikhub/` 目录**（不依赖外部 skill）。**不要再 `claude mcp add tikhub-*`**：
+ 
+-    - HTTP 端点是 `https://mcp.tikhub.io/{xiaohongshu|douyin|kuaishou|wechat|bilibili}/mcp`，所有平台共用一个 CLI、一个 API key
++    - Xiaohongshu：CLI adapter → Direct App V2 REST（production primary）
++    - 其他平台：CLI adapter → `https://mcp.tikhub.io/<platform>/mcp`（现有 MCP transport）
++    - 两种 transport 共用现有 `TIKHUB_API_KEY`，但错误策略分开；MCP session error 不得套进 REST
+     - 不需要重启 claude，不污染全局工具列表
+     - session id 自动缓存（5 min TTL），不用关心连接管理
+ 
+@@ -805,7 +802,7 @@ tikhub kuaishou kuaishou_app_search_video_v2 --keyword Cursor --page 1
+     ```
+     详见 `tikhub/README.md`。
+ 
+-12. **TikHub platform call failure contract**：
++12. **TikHub MCP platform call failure contract（不适用于 XHS REST）**：
+     - 首次失败时，原工具、原参数短 backoff 后只重试 1 次。
+     - 若错误可能与 MCP session 有关，刷新 session 后再试 1 次；总重试必须有界。
+     - HTTP 401 不重试、不刷新 session、不修改 API Key，明确报告 credential problem。
+diff --git a/references/diagnostic-mode.md b/references/diagnostic-mode.md
+index e6845e0..04e63fe 100644
+--- a/references/diagnostic-mode.md
++++ b/references/diagnostic-mode.md
+@@ -95,11 +95,11 @@
+ 
+ **第一步：找候选（先攒 10-15 个，候选池要够厚）**
+ 
+-| 方法 | 怎么用（直接调 tikhub MCP） |
++| 方法 | 怎么用（小红书走 Direct App V2 REST；其他平台保持既有 MCP） |
+ |---|---|
+-| 同领域博主搜索 | `xiaohongshu_web_search_users` / `douyin_billboard_fetch_hot_account_search_list --cursor 0` / `kuaishou_app_search_user_v2` |
+-| 行业关键词搜作品反查作者 | `xiaohongshu_app_search_notes` / 抖音 `hashtag_search_result` → `hashtag_video_list` / `kuaishou_app_search_video_v2` 按互动量倒序；抖音视频搜索只做超时受控补充 |
+-| 平台热榜锁定头部 | `xiaohongshu_web_v2_fetch_hot_list` / `douyin_app_v3_fetch_hot_search_list` / `kuaishou_web_fetch_kuaishou_hot_list_v2` |
++| 同领域博主搜索 | `tikhub xiaohongshu search_users` / `douyin_billboard_fetch_hot_account_search_list --cursor 0` / `kuaishou_app_search_user_v2` |
++| 行业关键词搜作品反查作者 | `tikhub xiaohongshu search_notes` / 抖音 `hashtag_search_result` → `hashtag_video_list` / `kuaishou_app_search_video_v2` 按互动量倒序；抖音视频搜索只做超时受控补充 |
++| 平台热榜锁定头部 | 小红书从 `search_notes` 的真实候选中按互动指标筛选 / `douyin_app_v3_fetch_hot_search_list` / `kuaishou_web_fetch_kuaishou_hot_list_v2` |
+ | 关注页 + 推荐小三角 | 看自己/已知对标账号的"相似推荐",抖音用 `douyin_xingtu_v2_get_recommend_for_star_authors` |
+ | 第三方数据工具 | 蝉小红 / 新红 / 灰豚数据,查赛道 top 100（人工） |
+ | 爆款作品反查 | 抖音可用 `hashtag_video_list` 反查；小红书只用关键词搜笔记，不能按 hashtag 维度搜 → 按互动量倒序找重复出现的作者 |
+@@ -314,7 +314,7 @@ python3 ~/.claude/skills/social-account-doctor/scripts/analyze_video.py <视频
+ ```
+ 1. 用 tikhub MCP 拉评论：
+    - 抖音：tikhub douyin douyin_app_v3_fetch_video_comments
+-   - 小红书：tikhub xiaohongshu xiaohongshu_app_get_note_comments
++   - 小红书：`tikhub xiaohongshu get_note_comments`
+    - 快手：tikhub kuaishou kuaishou_app_fetch_one_video_comment
+ 2. 取前 50-100 条评论，让 Claude 做痛点聚类 + 情绪分布
+ 3. 输出：top 5 高频痛点 + 评论情绪分布（正/负/求资源/吐槽）
+@@ -330,10 +330,8 @@ tikhub douyin douyin_app_v3_fetch_video_high_quality_play_url(aweme_id=...)
+ → 拿到 URL 后用 curl/wget 下载到 /tmp/account_diag/{aweme_id}/video.mp4
+ 
+ # 小红书笔记图片
+-# 没有独立的 image 接口可用 (web_v2_fetch_note_image 实测挂)
+-# 改用 app_get_note_info 返回里的 image_list URL
+-tikhub xiaohongshu xiaohongshu_app_get_note_info(note_id=..., xsec_token=...)
+-→ 从 image_list 字段拿 URL 列表
++tikhub xiaohongshu get_image_note_detail --note_id ...
++→ 从 App V2 图文详情的图片字段拿 URL 列表
+ 
+ # 快手视频
+ tikhub kuaishou kuaishou_app_fetch_one_video(photo_id=...)
+@@ -559,21 +557,19 @@ tikhub kuaishou kuaishou_app_fetch_one_video(photo_id=...)
+ | 粉丝画像（深度诊断） | `douyin_billboard_fetch_hot_account_fans_portrait_list`（仅星图收录账号有数据，普通账号会空） | `sec_uid` |
+ | 热搜榜 | `douyin_app_v3_fetch_hot_search_list` | — |
+ 
+-### 小红书（tikhub xiaohongshu ） — 接口选择见 SKILL.md §9.1（实测 2026-04-23）
++### 小红书（tikhub xiaohongshu）— Direct App V2 REST（复测 2026-08-14）
+ | 任务 | 工具 | 关键参数 |
+ |---|---|---|
+-| 账号信息 | `xiaohongshu_app_get_user_info` (App V1, **首选**) | `user_id` |
+-| 用户笔记列表 | `xiaohongshu_web_v2_fetch_home_notes_app`（当前唯一能用） | `user_id` + `cursor` |
+-| 笔记详情 | `xiaohongshu_app_get_note_info` (App V1, 需 `xsec_token`) | `note_id` + `xsec_token` |
+-| 笔记图片 | 用 `app_get_note_info` 返回的 `image_list` URL (`web_v2_fetch_note_image` 实测挂) | — |
+-| 笔记评论 | `xiaohongshu_app_get_note_comments` (App V1) | `note_id` |
+-| 评论子回复 | `xiaohongshu_app_get_sub_comments` (App V1) | `note_id` + `comment_id` |
+-| 关键词搜笔记 | `xiaohongshu_app_search_notes` (App V1) | `keyword` + `sort_type` |
+-| 关键词搜用户 | `xiaohongshu_web_search_users` (Web V1, **唯一可用**) | `keyword` + `page` |
+-| 热榜 | `xiaohongshu_web_v2_fetch_hot_list` (⚠️ 官方说 Web V2 已停维护，暂时能用) | — |
+-| 分享链接解析 | `xiaohongshu_web_get_note_id_and_xsec_token` (短链 → note_id+xsec_token) | `share_link` |
+-
+-**⚠️ 不要用** (官方弃用 / 实测全挂): `app_v2_*` 全系列实测 RetryError; `app_search_notes_v2` / `app_search_users` / `app_get_video_note_info` / `app_get_notes_by_topic` 官方明确弃用; `web_v2_fetch_user_info/feed_notes_v2/note_comments/sub_comments/home_notes` 官方说停止维护, 暂能用但别长期依赖。
++| 账号信息 | `get_user_info` | `user_id` 或 `share_text` |
++| 用户笔记列表 | `get_user_posted_notes` | `user_id` / `share_text` + `cursor` |
++| 图文笔记详情 | `get_image_note_detail` | `note_id` 或 `share_text` |
++| 视频笔记详情 | `get_video_note_detail` | `note_id` 或 `share_text` |
++| 笔记评论 | `get_note_comments` | `note_id` / `share_text` + `cursor` |
++| 评论子回复 | `get_note_sub_comments` | `comment_id` + `note_id` / `share_text` |
++| 关键词搜笔记 | `search_notes` | `keyword` + App V2 search 参数 |
++| 关键词搜用户 | `search_users` | `keyword` + `page` / `search_id` |
++
++App V1 / Web V2 / Web V3 均为 obsolete production routes；不得从 cached catalog 选择，也不得作为 REST 失败后的随机 fallback。Web Search/Jina 只能作为明确标注的 secondary evidence。
+ 
+ ### 快手（tikhub kuaishou ）
+ | 任务 | 工具 | 关键参数 |
+diff --git a/references/platforms/xiaohongshu.md b/references/platforms/xiaohongshu.md
+index 12c82e2..5d82e2e 100644
+--- a/references/platforms/xiaohongshu.md
++++ b/references/platforms/xiaohongshu.md
+@@ -81,7 +81,7 @@ CES = 点赞×1 + 收藏×1 + 转发×4 + 评论×4 + 关注×8
+ 
+ ```
+ 1. 漏斗看到 CTR < 5% 或 CES 进不了下一档 → 直接进本节
+-2. 调 tikhub xiaohongshu xiaohongshu_web_v2_fetch_feed_notes_v2(note_id)
++2. 调 `tikhub xiaohongshu get_image_note_detail --note_id <id>`（视频笔记用 `get_video_note_detail`）
+    → 拿封面 url + 标题 + 互动数据（赞/藏/评/转）+ 阅读完成率
+ 3. 下载封面到 /tmp/account_diagnostic/{note_id}/cover.jpg
+ 4. 调 scripts/analyze_image.py（拆封面 5 变量 + 模板归类）
+@@ -118,11 +118,11 @@ CES = 点赞×1 + 收藏×1 + 转发×4 + 评论×4 + 关注×8
+ 
+ ```
+ 1. 漏斗看到 搜索流量占比 < 30% → 直接进本节
+-2. 调 tikhub xiaohongshu xiaohongshu_web_v2_fetch_feed_notes_v2(note_id)
++2. 调 `tikhub xiaohongshu get_image_note_detail --note_id <id>`（视频笔记用 `get_video_note_detail`）
+    → 拿标题 + 正文 + 标签 + 话题
+ 3. 提取所有出现的关键词（分词 / 命名实体）
+ 4. 算"目标关键词"在标题/正文/标签三处的出现次数
+-5. 调 tikhub xiaohongshu xiaohongshu_app_search_notes(keyword=目标词, sort_type=general)
++5. 调 `tikhub xiaohongshu search_notes --keyword <目标词> --sort_type general`
+    → 看自己的笔记排在第几位（搜不到 = 关键词埋点失败）
+ 6. 对照 §3.2 搜索失败的四种典型根因
+ ```
+@@ -150,50 +150,36 @@ CES = 点赞×1 + 收藏×1 + 转发×4 + 评论×4 + 关注×8
+ 
+ ---
+ 
+-## 4. tikhub-xiaohongshu 工具映射表
++## 4. tikhub-xiaohongshu App V2 映射表
+ 
+-> 首选 / Fallback。首选挂时按列依次重试。
+->
+-> **⚠️ 硬规则（复测 2026-04-23，与 SKILL.md §9.1 接口稳定性表对齐）**：
+-> - search / note_info / comments / user_info 首选 App V1；用户作品列表目前只有 `xiaohongshu_web_v2_fetch_home_notes_app` 跑通
+-> - App V2 全系列实测 RetryError；Web V2 只能作为少数场景备用，官方已停止维护，随时可能下线
+-> - **官方说法 vs 实测**：tikhub 官方 2026-04 称 App V2 应可用，但实测仍 RetryError — **以实测为准**
+-> - **官方已弃用接口**：`xiaohongshu_app_search_notes_v2`（注意命名：`app_search_notes_v2` ≠ `app_v2_search_notes`）—— **永远不要用**
+-> - 关键词搜笔记 = `xiaohongshu_app_search_notes`（App V1，唯一稳定）
+-> - 关键词搜用户 = `xiaohongshu_web_search_users`（Web V1，唯一稳定 — 注意 App V1 `search_users` 也挂）
+-> - **小红书官方不开放话题标签搜索**（只支持关键词搜笔记）—— 用户问 "#XX 标签下的笔记" 时，明确告诉他"只能搜关键词"
+-> - 任一工具返回 `RetryError[HTTPStatusError]` = 直接按 SKILL.md §9 表换可用版本，**禁止在同一接口刷重试**（tenacity 已重试 3 次了，再刷只会浪费时间 + 计费）
+-> - 返回 `code != 200` 但有 `message` → 看 `message_zh`，是参数错 / 限流 / 余额不足，按提示改参数；不要当成"接口挂了"换工具
+-> - 返回 `data.items` 为空 → 关键词无结果或被风控，换近义词/降低 sort_type
+-
+-| 任务 | 首选 | Fallback |
+-|---|---|---|
+-| 账号信息（昵称/粉丝/认证） | `xiaohongshu_app_get_user_info` | 需要时让用户补主页截图 |
+-| 账号笔记列表 | `xiaohongshu_web_v2_fetch_home_notes_app`（当前唯一能用） | — |
+-| 账号粉丝/关注关系 | 当前不稳定 | 优先让用户截图 |
+-| 用户收藏笔记（看口味） | 当前不稳定 | — |
+-| 笔记详情 | `xiaohongshu_app_get_note_info`（需 xsec_token） | `xiaohongshu_web_get_note_info_v7` / `xiaohongshu_web_v2_fetch_feed_notes_v2`（备用） |
+-| 笔记图片（封面+正文图） | 从 `app_get_note_info` / `web_get_note_info_v7` 的 `image_list` 字段取 | — |
+-| 笔记评论 | `xiaohongshu_app_get_note_comments` | `xiaohongshu_web_v2_fetch_note_comments`（备用） |
+-| 评论子回复 | `xiaohongshu_app_get_sub_comments` | `xiaohongshu_web_v2_fetch_sub_comments`（备用） |
+-| 关键词搜笔记（找选题/对标作品） | `xiaohongshu_app_search_notes`（App V1，**唯一稳**） | `xiaohongshu_web_search_notes`（Web V1，备用） — ❌ 不要试 V2 全挂 |
+-| 关键词搜用户（找对标账号） | `xiaohongshu_web_search_users`（Web V1，**唯一稳**） | — ❌ App V1/V2 全挂,Web V2 也挂,没有备用 |
+-| 热榜（蓝海期选题） | `xiaohongshu_web_v2_fetch_hot_list` | — |
+-| 话题信息 + 话题笔记 | 小红书当前不支持 hashtag 维度搜笔记 | 只能关键词搜索 |
+-| 分享链接解析 | `xiaohongshu_web_get_note_id_and_xsec_token` | `xiaohongshu_app_extract_share_info` |
+-| 商品列表（看变现） | 当前不稳定 | 让用户补店铺/商品后台截图 |
++> **生产基线（复测 2026-08-14）**：Xiaohongshu 只通过 `tikhub` CLI 的 Direct App V2 REST transport。App V1 / Web V2 / Web V3 均视为 obsolete production routes，不做随机 fallback。
++
++| 任务 | App V2 action |
++|---|---|
++| 账号信息（昵称/粉丝/认证） | `get_user_info` |
++| 账号笔记列表 | `get_user_posted_notes` |
++| 图文笔记详情 | `get_image_note_detail` |
++| 视频笔记详情 | `get_video_note_detail` |
++| 笔记评论 | `get_note_comments` |
++| 评论子回复 | `get_note_sub_comments` |
++| 关键词搜笔记 | `search_notes` |
++| 关键词搜用户 | `search_users` |
++
++REST adapter 统一返回：`provider`（HTTP/code/request_id）、`items` 或 `data`、`pagination`。结果里的 note/user/comment ID 和 follow-up token 保留原值；没有的字段不补造。
++
++错误规则：401 不重试；429 bounded backoff；其他 4xx 不重试；5xx/连接/超时原请求最多重试 1 次；HTTP 200 但 provider code 非成功时报告 `provider_error`。REST 不处理 MCP 的 `can't start new thread`。
+ 
+ ### 4.1 推荐调用顺序（输入 = 账号链接时）
+ 
+ ```
+-1. dispatch_account.py <url> → 拿到 user_id (+ xsec_token)
+-2. xiaohongshu_app_get_user_info(user_id) → 账号基础信息；失败时让用户补主页截图
+-3. xiaohongshu_web_v2_fetch_home_notes_app(user_id, cursor="") → 最近 20 条 note_id 列表
+-4. 计算每条互动数据（avg_like, avg_collect, avg_comment）→ 算 CES 均值 + 爆款率
+-5. 取 top 3 + bottom 3 → 对每条调 xiaohongshu_app_get_note_info（需 xsec_token）/ xiaohongshu_web_get_note_info_v7 → 拿完整数据
++1. dispatch_account.py <url> → 拿到 user_id 或保留 share_text
++2. tikhub xiaohongshu get_user_info --user_id <id>
++3. tikhub xiaohongshu get_user_posted_notes --user_id <id> --cursor ""
++4. 计算每条互动数据（avg_like, avg_collect, avg_comment）→ CES 均值 + 爆款率
++5. top 3 + bottom 3 → get_image_note_detail / get_video_note_detail
+ 6. 对 top 3 + bottom 3 → scripts/analyze_image.py 拆封面 5 变量
+-7. 对 top 3 → xiaohongshu_app_get_note_comments 拿前 20 条评论（提炼痛点）
+-8. 关键词搜索 → 找对标候选（5k-50k 粉，活跃，同赛道）
++7. 对 top 3 → get_note_comments（提炼痛点）
++8. search_notes / search_users → 找对标候选
+ ```
+ 
+ ---
+@@ -203,7 +189,7 @@ CES = 点赞×1 + 收藏×1 + 转发×4 + 评论×4 + 关注×8
+ | 维度 | 小红书特化指引 |
+ |---|---|
+ | **账号定位** | 主页 9 宫格风格统一性 + 简介人群锁定 + 是否有"专攻 XX"的标签词 |
+-| **选题角度** | **必须有搜索量背书**：调 `xiaohongshu_app_search_notes` 验证目标词是否有 ≥ 100 笔记，避免无人搜的伪需求 |
++| **选题角度** | **必须有搜索量背书**：调 `tikhub xiaohongshu search_notes` 验证目标词是否有足够候选，避免无人搜的伪需求 |
+ | **封面公式** | 套 SKILL.md §5.1 五种封面（A 大字报 / B 对比 / C 真人出镜 / D 实物展示 / E 表格截图）。**3:4 竖版 + 大字 ≥ 1/4 + 高对比** 是基本功 |
+ | **标题钩子** | 套 SKILL.md §5.2 10 公式 + **强制带核心关键词**（前 10 字内）+ 数字/emoji/【】 |
+ | **正文骨架** | **首段 30 字内出钩子**（提问/承诺/反差）→ 3-5 个分点（emoji 分隔）→ 结尾互动引导 + 标签 |
+@@ -223,7 +209,7 @@ CES = 点赞×1 + 收藏×1 + 转发×4 + 评论×4 + 关注×8
+ ### P1（本月调 — 系统性短板）
+ 
+ - [ ] 封面 5 变量评分对标差距 ≥ 2 → 全账号封面统一改造（用 analyze_image 跑 top 3 对标，提炼共性模板）
+-- [ ] 选题维度差距 ≥ 2 → 用 `xiaohongshu_app_search_notes` 扫赛道 top 50，提炼 10 个搜索量 ≥ 1000 的选题模板
++- [ ] 选题维度差距 ≥ 2 → 用 `tikhub xiaohongshu search_notes` 扫赛道候选，提炼可复用选题模板
+ - [ ] CES 分项诊断：转发 < 点赞 × 0.05 → 改句式为"避坑/拯救/我帮你做完了"
+ 
+ ### P2（季度沉淀）
+diff --git a/scripts/dispatch_account.py b/scripts/dispatch_account.py
+index f24782d..9cce575 100644
+--- a/scripts/dispatch_account.py
++++ b/scripts/dispatch_account.py
+@@ -1,14 +1,15 @@
+ #!/usr/bin/env python3
+ """
+ social-account-doctor: dispatch_account.py
+-账号 URL → 平台识别 → 提示该调哪个 tikhub MCP 工具拿账号信息 + 笔记列表。
++账号 URL → 平台识别 → 提示该调哪个 tikhub transport 工具拿账号信息 + 笔记列表。
+ 
+ 不直接调 MCP（MCP 调用要走 Claude）。本脚本只做：
+ 1. 解析 URL，识别平台（仅支持小红书 / 抖音 / 快手）
+ 2. 提取 user_id / sec_user_id / username（平台不同字段不同）
+-3. 输出 JSON：告诉 caller platform / user_id / 要调哪个 tikhub MCP 工具
++3. 输出 JSON：告诉 caller platform / user_id / 要调哪个 tikhub 命令
+ 
+-caller 拿到 JSON 后，自己去调对应 tikhub MCP，再把账号信息 + 笔记列表回填给诊断流程。
++caller 拿到 JSON 后，自己去调对应 tikhub 命令，再把账号信息 + 笔记列表回填给诊断流程。
++小红书命令使用 Direct App V2 REST；其他平台保持既有 MCP transport。
+ 
+ 用法:
+     dispatch_account.py <账号URL>
+@@ -36,19 +37,18 @@ PLATFORM_RULES = [
+             (r"/profile/([a-z0-9]+)", "user_id"),
+         ],
+         "tools": {
+-            "extract_share": "tikhub xiaohongshu xiaohongshu_app_get_user_id_and_xsec_token",
+-            "user_info": "tikhub xiaohongshu xiaohongshu_app_v2_get_user_info",
+-            "user_notes": "tikhub xiaohongshu xiaohongshu_app_v2_get_user_posted_notes",
+-            "user_faved": "tikhub xiaohongshu xiaohongshu_app_v2_get_user_faved_notes",
+-            "note_detail": "tikhub xiaohongshu xiaohongshu_web_v2_fetch_feed_notes_v2",
+-            "note_comments": "tikhub xiaohongshu xiaohongshu_web_v2_fetch_note_comments",
+-            "search_notes": "tikhub xiaohongshu xiaohongshu_app_search_notes",
+-            "search_users": "tikhub xiaohongshu xiaohongshu_web_search_users",
+-            "hot_list": "tikhub xiaohongshu xiaohongshu_web_v2_fetch_hot_list",
++            "user_info": "tikhub xiaohongshu get_user_info",
++            "user_notes": "tikhub xiaohongshu get_user_posted_notes",
++            "image_detail": "tikhub xiaohongshu get_image_note_detail",
++            "video_detail": "tikhub xiaohongshu get_video_note_detail",
++            "note_comments": "tikhub xiaohongshu get_note_comments",
++            "note_sub_comments": "tikhub xiaohongshu get_note_sub_comments",
++            "search_notes": "tikhub xiaohongshu search_notes",
++            "search_users": "tikhub xiaohongshu search_users",
+         },
+         "needs_share_resolve": True,
+         "id_field": "user_id",
+-        "extra_param_note": "小红书 V2 接口可能需要 xsec_token，先调 extract_share 拿全套字段",
++        "extra_param_note": "小红书 App V2 REST 接受 user_id 或 share_text；不要选择 App V1 / Web V2 / Web V3",
+     },
+     {
+         "platform": "douyin",
+@@ -149,9 +149,14 @@ def main():
+     primary_id = ids.get(rule["id_field"])
+     needs_resolve = rule["needs_share_resolve"] and not primary_id
+ 
+-    if needs_resolve and "extract_share" in rule["tools"]:
++    if rule["platform"] == "xiaohongshu" and needs_resolve:
+         next_step = (
+-            f"短链/无 ID — 先调 MCP 工具 `{rule['tools']['extract_share']}` "
++            "短链/无 ID — 通过 Direct App V2 REST 调 "
++            f"`{rule['tools']['user_info']} --share_text {url}` 获取账号信息"
++        )
++    elif needs_resolve and "extract_share" in rule["tools"]:
++        next_step = (
++            f"短链/无 ID — 先调工具 `{rule['tools']['extract_share']}` "
+             f"(传 share_link={url}) 解析出 {rule['id_field']}"
+         )
+     elif primary_id:
+@@ -162,7 +167,7 @@ def main():
+                 break
+         next_step = (
+             f"已识别 {rule['id_field']}={primary_id} — "
+-            f"直接调 MCP 工具 `{primary_tool}` 拿账号信息"
++            f"直接调工具 `{primary_tool}` 拿账号信息"
+         )
+     else:
+         next_step = (
+diff --git a/tests/test_xhs_rest_transport.py b/tests/test_xhs_rest_transport.py
+new file mode 100644
+index 0000000..699903c
+--- /dev/null
++++ b/tests/test_xhs_rest_transport.py
+@@ -0,0 +1,226 @@
++import importlib.machinery
++import importlib.util
++import io
++import json
++import runpy
++import sys
++import urllib.error
++from pathlib import Path
++
++import pytest
++
++
++ROOT = Path(__file__).resolve().parents[1]
++LIB = ROOT / "tikhub" / "lib"
++BIN = ROOT / "tikhub" / "bin" / "tikhub"
++sys.path.insert(0, str(LIB))
++
++
++def load_rest():
++    path = LIB / "xhs_rest_client.py"
++    spec = importlib.util.spec_from_file_location("xhs_rest_under_test", path)
++    module = importlib.util.module_from_spec(spec)
++    sys.modules[spec.name] = module
++    spec.loader.exec_module(module)
++    return module
++
++
++def load_cli():
++    loader = importlib.machinery.SourceFileLoader("tikhub_cli_under_test", str(BIN))
++    spec = importlib.util.spec_from_loader(loader.name, loader)
++    module = importlib.util.module_from_spec(spec)
++    loader.exec_module(module)
++    return module
++
++
++class FakeResponse:
++    def __init__(self, payload, status=200):
++        self.status = status
++        self.body = json.dumps(payload, ensure_ascii=False).encode()
++
++    def __enter__(self):
++        return self
++
++    def __exit__(self, *_args):
++        return False
++
++    def read(self):
++        return self.body
++
++
++EXPECTED_ACTIONS = {
++    "search_notes", "search_users", "get_user_posted_notes",
++    "get_image_note_detail", "get_video_note_detail", "get_note_comments",
++    "get_note_sub_comments", "get_user_info",
++}
++
++
++def test_action_schema_matches_verified_app_v2_contract():
++    module = load_rest()
++    assert set(module.ACTION_SCHEMAS) == EXPECTED_ACTIONS
++    search = module.ACTION_SCHEMAS["search_notes"]
++    assert search["required"] == {"keyword"}
++    assert search["integer"] == {"page", "ai_mode"}
++    assert search["defaults"] == {
++        "page": 1,
++        "sort_type": "general",
++        "note_type": "不限",
++        "time_filter": "不限",
++        "search_id": "",
++        "search_session_id": "",
++        "source": "explore_feed",
++        "ai_mode": 0,
++    }
++
++
++def test_search_normalization_preserves_items_metadata_and_provider_ids():
++    module = load_rest()
++    payload = {
++        "code": 200,
++        "request_id": "req-1",
++        "message": "ok",
++        "data": {"data": {
++            "items": [{"id": "note-1", "xsec_token": "follow-up-token"}],
++            "search_id": "search-1",
++            "search_session_id": "session-1",
++            "has_more": True,
++        }},
++    }
++    result = module.normalize_response("search_notes", payload, 200)
++    assert result["transport"] == "rest"
++    assert result["items"] == [{"id": "note-1", "xsec_token": "follow-up-token"}]
++    assert result["pagination"] == {
++        "search_id": "search-1", "search_session_id": "session-1", "has_more": True,
++    }
++    assert result["provider"]["request_id"] == "req-1"
++
++
++def test_parameter_validation_coerces_verified_integer_fields_and_rejects_unknown():
++    module = load_rest()
++    params = module.validate_arguments("search_notes", {"keyword": "移民", "page": "2", "ai_mode": "0"})
++    assert params["page"] == 2
++    assert params["ai_mode"] == 0
++    with pytest.raises(module.XhsRestError, match="unsupported parameter"):
++        module.validate_arguments("search_notes", {"keyword": "移民", "web_v3_cursor": "x"})
++
++
++def test_401_is_credential_problem_without_retry():
++    module = load_rest()
++    calls = []
++
++    def fail(request, timeout):
++        calls.append(request.full_url)
++        raise urllib.error.HTTPError(request.full_url, 401, "unauthorized", {}, io.BytesIO(b"{}"))
++
++    client = module.XhsRestClient(api_key="test", urlopen=fail, sleep=lambda _: None)
++    with pytest.raises(module.XhsRestError) as caught:
++        client.call("search_notes", {"keyword": "移民"})
++    assert caught.value.category == "credential_problem"
++    assert len(calls) == 1
++
++
++def test_429_backs_off_once_and_does_not_change_request():
++    module = load_rest()
++    calls, sleeps = [], []
++
++    def open_request(request, timeout):
++        calls.append(request.full_url)
++        if len(calls) == 1:
++            raise urllib.error.HTTPError(request.full_url, 429, "limited", {}, io.BytesIO(b"{}"))
++        return FakeResponse({"code": 200, "data": {"data": {"items": []}}})
++
++    client = module.XhsRestClient(api_key="test", urlopen=open_request, sleep=sleeps.append)
++    result = client.call("search_notes", {"keyword": "移民"})
++    assert result["items"] == []
++    assert calls[0] == calls[1]
++    assert sleeps == [1.0]
++
++
++def test_4xx_request_error_is_not_retried():
++    module = load_rest()
++    calls = []
++
++    def fail(request, timeout):
++        calls.append(request.full_url)
++        raise urllib.error.HTTPError(request.full_url, 422, "schema", {}, io.BytesIO(b"{}"))
++
++    client = module.XhsRestClient(api_key="test", urlopen=fail, sleep=lambda _: None)
++    with pytest.raises(module.XhsRestError) as caught:
++        client.call("search_notes", {"keyword": "移民"})
++    assert caught.value.category == "request_error"
++    assert len(calls) == 1
++
++
++def test_5xx_retries_once_then_marks_rest_unavailable():
++    module = load_rest()
++    calls, sleeps = [], []
++
++    def fail(request, timeout):
++        calls.append(request.full_url)
++        raise urllib.error.HTTPError(request.full_url, 503, "down", {}, io.BytesIO(b"{}"))
++
++    client = module.XhsRestClient(api_key="test", urlopen=fail, sleep=sleeps.append)
++    with pytest.raises(module.XhsRestError) as caught:
++        client.call("search_notes", {"keyword": "移民"})
++    assert caught.value.payload() == {
++        "error": "TikHub REST HTTP 503",
++        "layer": "TikHub",
++        "platform": "xiaohongshu",
++        "transport": "rest",
++        "status": "unavailable",
++        "category": "transient",
++        "http_status": 503,
++        "retry_count": 1,
++    }
++    assert len(calls) == 2
++    assert sleeps == [0.25]
++
++
++def test_successful_http_with_provider_error_is_not_faked_as_success():
++    module = load_rest()
++    client = module.XhsRestClient(
++        api_key="test",
++        urlopen=lambda request, timeout: FakeResponse({"code": 5001, "message": "provider failed"}),
++        sleep=lambda _: None,
++    )
++    with pytest.raises(module.XhsRestError) as caught:
++        client.call("search_notes", {"keyword": "移民"})
++    assert caught.value.category == "provider_error"
++
++
++def test_xhs_catalog_exposes_only_implemented_app_v2_actions():
++    cli = load_cli()
++    names = {tool["name"] for tool in cli._load_cached_tools("xiaohongshu")}
++    assert names == {f"xiaohongshu_app_v2_{action}" for action in EXPECTED_ACTIONS}
++    assert not any("web_v2" in name or "web_v3" in name for name in names)
++    assert not any(name.startswith("xiaohongshu_app_") and "app_v2" not in name for name in names)
++
++
++def test_agent_instructions_and_dispatch_do_not_recommend_obsolete_xhs_routes():
++    checked = [
++        ROOT / "SKILL.md",
++        ROOT / "references" / "diagnostic-mode.md",
++        ROOT / "references" / "platforms" / "xiaohongshu.md",
++        ROOT / "scripts" / "dispatch_account.py",
++    ]
++    obsolete_commands = (
++        "xiaohongshu_app_get_",
++        "xiaohongshu_app_search_",
++        "xiaohongshu_web_search_",
++        "xiaohongshu_web_v2_",
++        "xiaohongshu_web_v3_",
++    )
++    for path in checked:
++        text = path.read_text(encoding="utf-8")
++        assert not any(command in text for command in obsolete_commands), path
++    skill = checked[0].read_text(encoding="utf-8")
++    assert "Direct App V2 REST" in skill
++    assert "secondary evidence" in skill
++
++
++def test_xhs_dispatch_uses_only_stable_rest_adapter_commands():
++    namespace = runpy.run_path(str(ROOT / "scripts" / "dispatch_account.py"))
++    rule = next(rule for rule in namespace["PLATFORM_RULES"] if rule["platform"] == "xiaohongshu")
++    assert set(rule["tools"].values()) == {
++        f"tikhub xiaohongshu {action}" for action in EXPECTED_ACTIONS
++    }
+diff --git a/tikhub/README.md b/tikhub/README.md
+index 8c8659d..e010af5 100644
+--- a/tikhub/README.md
++++ b/tikhub/README.md
+@@ -6,7 +6,8 @@ fully self-contained — no external skill dependency.
+ ```
+ tikhub/
+ ├── bin/tikhub                       # CLI entry point (chmod +x)
+-├── lib/tikhub_client.py             # HTTP JSON-RPC + SSE + session cache (pure stdlib)
++├── lib/tikhub_client.py             # MCP JSON-RPC + SSE + session cache (non-XHS platforms)
++├── lib/xhs_rest_client.py            # Xiaohongshu Direct App V2 REST + normalization
+ ├── references/tools-{platform}.json # cached /tools/list catalogs (5 platforms, ~330KB)
+ └── scripts/refresh_tools.py         # rebuild references/ from live tikhub
+ ```
+@@ -23,6 +24,7 @@ distribution, the wrapper is copied here.
+ # 1. Put the API key in the repository/installed Skill .env
+ cp -n .env.example .env
+ # Edit the existing TIKHUB_API_KEY line; do not append a duplicate key.
++# Set TIKHUB_XHS_TRANSPORT=rest and a region-appropriate TIKHUB_REST_BASE_URL.
+ ${EDITOR:-vi} .env
+ chmod 600 .env
+ 
+@@ -32,6 +34,7 @@ ln -sf "$(pwd)/tikhub/bin/tikhub" ~/.local/bin/tikhub
+ # 3. Verify
+ tikhub --health
+ tikhub list xiaohongshu search
++tikhub xiaohongshu search_notes --keyword 测试 --page 1
+ ```
+ 
+ ## Usage
+@@ -55,7 +58,9 @@ python3 tikhub/scripts/refresh_tools.py tiktok
+ 
+ ## Protocol notes
+ 
+-- HTTP endpoint: `https://mcp.tikhub.io/{platform}/mcp`
++- Xiaohongshu production: Direct REST `TIKHUB_REST_BASE_URL/api/v1/xiaohongshu/app_v2/<action>`.
++- Mainland China REST base: `https://api.tikhub.dev`; outside mainland: `https://api.tikhub.io`.
++- Other platforms: `https://mcp.tikhub.io/{platform}/mcp`.
+ - MCP `2024-11-05` over HTTP: `initialize` returns `Mcp-Session-Id` header → `tools/list` / `tools/call`
+ - Response is **SSE** (`text/event-stream`); wrapper parses `data: {...}` lines
+ - Session cached at `/tmp/.tikhub-session-{platform}.json` (5 min TTL); invalid → re-init + retry once
+@@ -71,7 +76,7 @@ python3 tikhub/scripts/refresh_tools.py tiktok
+ | `RetryError[<HTTPStatusError>]` | Upstream tikhub flakiness; rotate to fallback tool (see search skill docs) |
+ | `tool 'X' not found in catalog` | Cache stale → `python3 tikhub/scripts/refresh_tools.py <platform>` |
+ 
+-## Platform-call failure policy
++## MCP platform-call failure policy
+ 
+ - First failure: retry the exact same tool and arguments once after a short backoff.
+ - If either failure indicates an MCP session problem: discard the cached session, initialize a new one, and retry once more.
+@@ -80,6 +85,16 @@ python3 tikhub/scripts/refresh_tools.py tiktok
+ - `can't start new thread`: treat as an upstream transient/backend error and apply only the bounded retry above.
+ - When retries are exhausted, the CLI reports `layer=TikHub` and `status=unavailable`. Web Search or Jina may be offered only as explicitly labeled `secondary evidence`; their output is never TikHub/platform-ground-truth data.
+ 
++## Xiaohongshu REST failure policy
++
++- HTTP 401: `credential_problem`, no retry and no key mutation.
++- HTTP 429: `rate_limited`, one bounded backoff without increasing concurrency.
++- Other 4xx: `request_error`, no retry.
++- 5xx / connection / timeout: `transient`, retry the identical request once.
++- HTTP success with a non-success provider code: `provider_error`.
++- Final errors include `layer=TikHub`, `platform=xiaohongshu`, `transport=rest`, and `status=unavailable`.
++- `can't start new thread` is MCP-specific and is not part of the REST handler.
++
+ ## Debugging
+ 
+ ```bash
+diff --git a/tikhub/bin/tikhub b/tikhub/bin/tikhub
+index b2a77c2..53d844d 100755
+--- a/tikhub/bin/tikhub
++++ b/tikhub/bin/tikhub
+@@ -26,6 +26,7 @@ from __future__ import annotations
+ 
+ import argparse
+ import json
++import os
+ import sys
+ from pathlib import Path
+ 
+@@ -41,6 +42,12 @@ from tikhub_client import (  # noqa: E402
+     health,
+     platforms,
+ )
++from xhs_rest_client import (  # noqa: E402
++    ACTION_SCHEMAS,
++    PROVIDER_TOOL_PREFIX,
++    XhsRestClient,
++    XhsRestError,
++)
+ 
+ REFERENCES_DIR = HERE.parent / "references"
+ SUPPORTED_PLATFORMS = (
+@@ -76,6 +83,11 @@ def _die_tikhub(error: TikhubError) -> None:
+     sys.exit(2)
+ 
+ 
++def _die_xhs_rest(error: XhsRestError) -> None:
++    print(json.dumps(error.payload(), ensure_ascii=False), file=sys.stderr)
++    sys.exit(2)
++
++
+ def _print_json(obj) -> None:
+     print(json.dumps(obj, ensure_ascii=False, indent=2))
+ 
+@@ -162,7 +174,11 @@ def _load_cached_tools(platform: str) -> list[dict] | None:
+     if not cache.is_file():
+         return None
+     try:
+-        return json.loads(cache.read_text())
++        tools = json.loads(cache.read_text())
++        if platform == "xiaohongshu":
++            allowed = {f"{PROVIDER_TOOL_PREFIX}{action}" for action in ACTION_SCHEMAS}
++            tools = [tool for tool in tools if tool.get("name") in allowed]
++        return tools
+     except (OSError, json.JSONDecodeError):
+         return None
+ 
+@@ -190,8 +206,13 @@ def cmd_describe(platform: str, tool_name: str) -> None:
+             f"no cached tool catalog for {platform!r}. "
+             f"Run: python3 {HERE.parent}/scripts/refresh_tools.py {platform}"
+         )
++    lookup_name = (
++        f"{PROVIDER_TOOL_PREFIX}{tool_name}"
++        if platform == "xiaohongshu" and tool_name in ACTION_SCHEMAS
++        else tool_name
++    )
+     for t in tools:
+-        if t["name"] == tool_name:
++        if t["name"] == lookup_name:
+             _print_json(t)
+             return
+     _die(f"tool {tool_name!r} not found in {platform} catalog")
+@@ -207,6 +228,21 @@ def cmd_call(platform: str, tool_name: str, args: argparse.Namespace, extras: li
+             _die("--json must be an object")
+     else:
+         arguments = _parse_kwargs(extras)
++    if platform == "xiaohongshu":
++        transport = os.environ.get("TIKHUB_XHS_TRANSPORT", "rest").strip().casefold()
++        if transport == "rest":
++            try:
++                result = XhsRestClient().call(tool_name, arguments)
++            except XhsRestError as error:
++                _die_xhs_rest(error)
++            _print_json(result)
++            return
++        if transport != "mcp":
++            _die("TIKHUB_XHS_TRANSPORT must be 'rest' or 'mcp'")
++        if not tool_name.startswith(PROVIDER_TOOL_PREFIX):
++            tool_name = f"{PROVIDER_TOOL_PREFIX}{tool_name}"
++        if tool_name not in {f"{PROVIDER_TOOL_PREFIX}{action}" for action in ACTION_SCHEMAS}:
++            _die("Xiaohongshu MCP diagnostic transport only permits implemented App V2 actions")
+     try:
+         client = TikhubClient(platform=platform)
+         result = client.call(tool_name, arguments)
+diff --git a/tikhub/lib/xhs_rest_client.py b/tikhub/lib/xhs_rest_client.py
+new file mode 100644
+index 0000000..8065fee
+--- /dev/null
++++ b/tikhub/lib/xhs_rest_client.py
+@@ -0,0 +1,311 @@
++"""Direct TikHub Xiaohongshu App V2 REST transport.
++
++This module intentionally covers only the App V2 actions used by Social Doctor.
++Other platforms continue to use the MCP transport in ``tikhub_client.py``.
++"""
++
++from __future__ import annotations
++
++import json
++import os
++import socket
++import time
++import urllib.error
++import urllib.parse
++import urllib.request
++from typing import Any, Callable
++
++from tikhub_client import load_api_key
++
++
++DEFAULT_BASE_URL = "https://api.tikhub.io"
++DEFAULT_TIMEOUT_SECONDS = 45
++
++ACTION_SCHEMAS = {
++    "search_notes": {
++        "required": {"keyword"},
++        "integer": {"page", "ai_mode"},
++        "defaults": {
++            "page": 1,
++            "sort_type": "general",
++            "note_type": "不限",
++            "time_filter": "不限",
++            "search_id": "",
++            "search_session_id": "",
++            "source": "explore_feed",
++            "ai_mode": 0,
++        },
++        "allowed": {
++            "keyword", "page", "sort_type", "note_type", "time_filter",
++            "search_id", "search_session_id", "source", "ai_mode",
++        },
++        "collection_keys": ("items",),
++    },
++    "search_users": {
++        "required": {"keyword"},
++        "integer": {"page"},
++        "defaults": {"page": 1, "search_id": "", "source": "explore_feed"},
++        "allowed": {"keyword", "page", "search_id", "source"},
++        "collection_keys": ("items", "users"),
++    },
++    "get_user_posted_notes": {
++        "required_any": ({"user_id", "share_text"},),
++        "defaults": {"user_id": "", "share_text": "", "cursor": ""},
++        "allowed": {"user_id", "share_text", "cursor"},
++        "collection_keys": ("items", "notes"),
++    },
++    "get_image_note_detail": {
++        "required_any": ({"note_id", "share_text"},),
++        "defaults": {"note_id": "", "share_text": ""},
++        "allowed": {"note_id", "share_text"},
++    },
++    "get_video_note_detail": {
++        "required_any": ({"note_id", "share_text"},),
++        "defaults": {"note_id": "", "share_text": ""},
++        "allowed": {"note_id", "share_text"},
++    },
++    "get_note_comments": {
++        "required_any": ({"note_id", "share_text"},),
++        "integer": {"index"},
++        "defaults": {
++            "note_id": "", "share_text": "", "cursor": "", "index": 0,
++            "pageArea": "UNFOLDED", "sort_strategy": "latest_v2",
++        },
++        "allowed": {
++            "note_id", "share_text", "cursor", "index", "pageArea", "sort_strategy",
++        },
++        "collection_keys": ("items", "comments"),
++    },
++    "get_note_sub_comments": {
++        "required": {"comment_id"},
++        "required_any": ({"note_id", "share_text"},),
++        "integer": {"index"},
++        "defaults": {
++            "note_id": "", "share_text": "", "cursor": "", "index": 1,
++        },
++        "allowed": {"note_id", "share_text", "comment_id", "cursor", "index"},
++        "collection_keys": ("items", "comments"),
++    },
++    "get_user_info": {
++        "required_any": ({"user_id", "share_text"},),
++        "defaults": {"user_id": "", "share_text": ""},
++        "allowed": {"user_id", "share_text"},
++    },
++}
++
++PROVIDER_TOOL_PREFIX = "xiaohongshu_app_v2_"
++LIST_ACTIONS = {
++    action for action, schema in ACTION_SCHEMAS.items() if schema.get("collection_keys")
++}
++
++
++class XhsRestError(Exception):
++    def __init__(
++        self,
++        message: str,
++        *,
++        category: str,
++        http_status: int | None = None,
++        retry_count: int = 0,
++    ):
++        super().__init__(message)
++        self.category = category
++        self.http_status = http_status
++        self.retry_count = retry_count
++
++    def payload(self) -> dict[str, Any]:
++        return {
++            "error": str(self),
++            "layer": "TikHub",
++            "platform": "xiaohongshu",
++            "transport": "rest",
++            "status": "unavailable",
++            "category": self.category,
++            "http_status": self.http_status,
++            "retry_count": self.retry_count,
++        }
++
++
++def canonical_action(tool_name: str) -> str:
++    action = tool_name
++    if action.startswith(PROVIDER_TOOL_PREFIX):
++        action = action[len(PROVIDER_TOOL_PREFIX):]
++    if action not in ACTION_SCHEMAS:
++        raise XhsRestError(
++            f"unsupported Xiaohongshu App V2 action: {tool_name}",
++            category="request_error",
++        )
++    return action
++
++
++def validate_arguments(action: str, arguments: dict[str, Any]) -> dict[str, Any]:
++    schema = ACTION_SCHEMAS[action]
++    unknown = sorted(set(arguments) - schema["allowed"])
++    if unknown:
++        raise XhsRestError(
++            f"unsupported parameter(s) for {action}: {', '.join(unknown)}",
++            category="request_error",
++        )
++    params = {**schema.get("defaults", {}), **arguments}
++    for name in schema.get("integer", set()):
++        value = params.get(name)
++        if isinstance(value, bool):
++            raise XhsRestError(f"{name} must be an integer", category="request_error")
++        try:
++            params[name] = int(value)
++        except (TypeError, ValueError) as error:
++            raise XhsRestError(f"{name} must be an integer", category="request_error") from error
++    missing = [name for name in schema.get("required", set()) if not params.get(name)]
++    if missing:
++        raise XhsRestError(
++            f"missing required parameter(s) for {action}: {', '.join(sorted(missing))}",
++            category="request_error",
++        )
++    for alternatives in schema.get("required_any", ()):
++        if not any(params.get(name) for name in alternatives):
++            raise XhsRestError(
++                f"{action} requires one of: {', '.join(sorted(alternatives))}",
++                category="request_error",
++            )
++    return params
++
++
++def _provider_data(payload: dict[str, Any]) -> Any:
++    value = payload.get("data")
++    if isinstance(value, dict) and "data" in value:
++        return value["data"]
++    return value
++
++
++def _collection(data: Any, keys: tuple[str, ...]) -> list[Any]:
++    if isinstance(data, list):
++        return data
++    if isinstance(data, dict):
++        for key in keys:
++            value = data.get(key)
++            if isinstance(value, list):
++                return value
++    return []
++
++
++def _metadata(data: Any) -> dict[str, Any]:
++    if not isinstance(data, dict):
++        return {}
++    names = {
++        "cursor", "has_more", "hasMore", "search_id", "searchId",
++        "search_session_id", "searchSessionId", "page", "total",
++    }
++    return {name: data[name] for name in names if name in data}
++
++
++def normalize_response(action: str, payload: dict[str, Any], http_status: int) -> dict[str, Any]:
++    provider_code = payload.get("code")
++    if provider_code not in (None, 0, 200, "0", "200"):
++        raise XhsRestError(
++            f"TikHub provider returned code {provider_code}: "
++            f"{payload.get('message') or payload.get('message_zh') or 'provider error'}",
++            category="provider_error",
++            http_status=http_status,
++        )
++    data = _provider_data(payload)
++    normalized = {
++        "ok": True,
++        "layer": "TikHub",
++        "platform": "xiaohongshu",
++        "transport": "rest",
++        "action": action,
++        "provider": {
++            "http_status": http_status,
++            "code": provider_code,
++            "request_id": payload.get("request_id"),
++            "message": payload.get("message"),
++        },
++        "pagination": _metadata(data),
++    }
++    if action in LIST_ACTIONS:
++        normalized["items"] = _collection(data, ACTION_SCHEMAS[action]["collection_keys"])
++        normalized["data"] = {
++            key: value
++            for key, value in data.items()
++            if isinstance(data, dict)
++            and key not in ACTION_SCHEMAS[action]["collection_keys"]
++        } if isinstance(data, dict) else {}
++    else:
++        normalized["data"] = data
++    return normalized
++
++
++class XhsRestClient:
++    def __init__(
++        self,
++        api_key: str | None = None,
++        base_url: str | None = None,
++        timeout: int | None = None,
++        *,
++        urlopen: Callable[..., Any] = urllib.request.urlopen,
++        sleep: Callable[[float], None] = time.sleep,
++    ):
++        self.api_key = api_key or load_api_key()
++        self.base_url = (base_url or os.environ.get("TIKHUB_REST_BASE_URL") or DEFAULT_BASE_URL).rstrip("/")
++        self.timeout = timeout or int(os.environ.get("TIKHUB_REST_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS))
++        self._urlopen = urlopen
++        self._sleep = sleep
++
++    def call(self, tool_name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
++        action = canonical_action(tool_name)
++        params = validate_arguments(action, arguments or {})
++        query = urllib.parse.urlencode(params)
++        url = f"{self.base_url}/api/v1/xiaohongshu/app_v2/{action}?{query}"
++        request = urllib.request.Request(
++            url,
++            headers={
++                "Authorization": f"Bearer {self.api_key}",
++                "Accept": "application/json",
++                "User-Agent": "social-account-doctor-xhs-rest/0.1",
++            },
++            method="GET",
++        )
++        last_error: XhsRestError | None = None
++        for attempt in range(2):
++            try:
++                with self._urlopen(request, timeout=self.timeout) as response:
++                    http_status = response.status
++                    payload = json.loads(response.read().decode("utf-8"))
++                return normalize_response(action, payload, http_status)
++            except urllib.error.HTTPError as error:
++                if error.code == 401:
++                    raise XhsRestError(
++                        "TikHub credential problem (HTTP 401); request was not retried",
++                        category="credential_problem",
++                        http_status=401,
++                    ) from error
++                category = "rate_limited" if error.code == 429 else (
++                    "transient" if error.code >= 500 else "request_error"
++                )
++                last_error = XhsRestError(
++                    f"TikHub REST HTTP {error.code}",
++                    category=category,
++                    http_status=error.code,
++                    retry_count=attempt,
++                )
++                if attempt == 0 and category in {"rate_limited", "transient"}:
++                    self._sleep(1.0 if error.code == 429 else 0.25)
++                    continue
++                raise last_error from error
++            except (urllib.error.URLError, TimeoutError, socket.timeout) as error:
++                last_error = XhsRestError(
++                    f"TikHub REST transient failure: {error}",
++                    category="transient",
++                    retry_count=attempt,
++                )
++                if attempt == 0:
++                    self._sleep(0.25)
++                    continue
++                raise last_error from error
++            except json.JSONDecodeError as error:
++                raise XhsRestError(
++                    "TikHub REST returned invalid JSON",
++                    category="provider_error",
++                    retry_count=attempt,
++                ) from error
++        raise last_error or XhsRestError("TikHub REST unavailable", category="transient")

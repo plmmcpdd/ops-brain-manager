@@ -28,16 +28,23 @@
           "path": "shared-capabilities/patches/social-account-doctor/0003-tikhub-failure-policy.patch",
           "applies_to_commit": "88bb251248ca05d7e17c5eed6a7d3885d938180e",
           "description": "Bound TikHub retries, refresh only session failures, and preserve evidence provenance"
+        },
+        {
+          "id": "xhs-app-v2-rest-primary",
+          "path": "shared-capabilities/patches/social-account-doctor/0004-xhs-app-v2-rest-primary.patch",
+          "applies_to_commit": "88bb251248ca05d7e17c5eed6a7d3885d938180e",
+          "description": "Route Xiaohongshu production actions through normalized Direct App V2 REST"
         }
       ],
       "executables": [
-        {"id": "python3", "command": "python3"},
-        {"id": "tikhub", "path": "~/.local/bin/tikhub"},
-        {"id": "ffmpeg", "path": "~/.local/bin/ffmpeg"},
-        {"id": "ffprobe", "path": "~/.local/bin/ffprobe"}
+        {"id": "python3", "command": "python3", "required": true},
+        {"id": "tikhub", "path": "~/.local/bin/tikhub", "required": true},
+        {"id": "ffmpeg", "path": "~/.local/bin/ffmpeg", "required": false},
+        {"id": "ffprobe", "path": "~/.local/bin/ffprobe", "required": false}
       ],
       "components": [
-        {"id": "TikHub", "required": true, "config_keys": ["TIKHUB_API_KEY"], "executables": ["tikhub"]},
+        {"id": "XHS App V2 REST", "required": true, "config_keys": ["TIKHUB_API_KEY", "TIKHUB_XHS_TRANSPORT", "TIKHUB_REST_BASE_URL"], "executables": ["tikhub"]},
+        {"id": "TikHub MCP", "required": false, "config_keys": ["TIKHUB_API_KEY"], "executables": ["tikhub"], "status_override": "DEGRADED"},
         {"id": "Visual Analysis", "required": false, "config_keys": ["VIDEO_ANALYSIS_API_KEY", "VIDEO_ANALYSIS_BASE_URL", "VIDEO_ANALYSIS_MODEL_NAME"], "executables": []},
         {"id": "Audio Transcription", "required": false, "config_keys": ["AUDIO_TRANSCRIPTION_API_KEY"], "executables": []},
         {"id": "Video Processing", "required": false, "config_keys": [], "executables": ["ffmpeg", "ffprobe"]}
