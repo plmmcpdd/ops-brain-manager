@@ -2,6 +2,8 @@
 
 Ops Brain clients share capability code through the agent runtime, while reports and assets remain in each client's current workspace.
 
+Shared capabilities are subordinate evidence providers, not operating brains. Standard client sessions hide the user-global Skill directory with Claude Code project-only settings and load the Manager-owned `ops-brain-runtime` plugin explicitly. The root session is `ops-brain-core`; Doctor is reachable only as the internal `doctor-evidence` agent and must return `final_authority: false` to Core. Capability availability never grants state ownership or final decision authority.
+
 The authoritative distribution definition is `shared-capabilities/manifest.json`. The first verified capability is `social-account-doctor`, installed once at `~/.claude/skills/social-account-doctor` from the pinned upstream commit. Do not copy it into customer workspaces. The runtime is upstream code plus the manifest-declared local compatibility patches; it must not be represented as an unmodified upstream build.
 
 Install on a new runtime:
