@@ -12,6 +12,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Unicode Manager create failed.' }
     $created = (@($raw) -join "`n") | ConvertFrom-Json
     if (-not $created.ok -or $created.data.client_id -ne $clientName) { throw 'Unicode Manager identity mismatch.' }
+    $initialized = & wsl.exe -d Ubuntu-E -- python3 $manager --registry $registry runtime initialize --client $clientName --content-form short-text --cadence-days 2 --data-collection manual --pool-status none --benchmark-status none --hooks yes --json
+    if ($LASTEXITCODE -ne 0 -or (((@($initialized) -join "`n") | ConvertFrom-Json).data.status -ne 'READY')) { throw 'Unicode runtime initialization failed.' }
     foreach ($arguments in @(
         @('show','--client',$clientName,'--json'),
         @('resolve-launch','--client',$clientName,'--json'),

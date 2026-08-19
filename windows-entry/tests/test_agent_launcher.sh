@@ -15,8 +15,17 @@ chmod +x "$TEST_HOME/.local/bin/tikhub"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$TEST_HOME/bin/claude"
 chmod +x "$TEST_HOME/bin/claude"
 trap 'rm -rf "$TMP"' EXIT
-WORK_A="$TMP/work-a"; WORK_B="$TMP/work-b"; STATE="$TMP/state"
-mkdir -p "$WORK_A" "$WORK_B"
+WORK_A="$TMP/work-a"; WORK_B="$TMP/work-b"; WORK_MISSING="$TMP/work-missing"; STATE="$TMP/state"
+mkdir -p "$WORK_A" "$WORK_B" "$WORK_MISSING"
+python3 - "$ROOT/.." "$WORK_A" "$WORK_B" <<'PY'
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from ops_brain_runtime import RuntimeProfile, initialize_runtime
+profile = RuntimeProfile("short-text", None, 2, "manual", "none", "none", True)
+for raw in sys.argv[2:]:
+    initialize_runtime(Path(raw), Path("/home/rong/tools/cheat-on-content"), profile)
+PY
 FAKE="$TMP/fake-agent"
 cat > "$FAKE" <<'EOF'
 #!/usr/bin/env bash
@@ -33,7 +42,7 @@ make_bootstrap() {
   local client_id="$1" workspace="$2" path
   path="$TMP/projections/$client_id/.ops-launch/initial_prompt.txt"
   mkdir -p "$(dirname "$path")"
-  printf 'OPS_BRAIN_BOOTSTRAP v1\nclient_id: %s\ndisplay_name: 测试客户\nworkspace: %s\nrole: Ops Brain / 运营大脑\nworkspace_type: 客户级长期运营工作区，不是普通代码仓库会话。\nstate_entry: 先读取并理解当前客户工作区中的 Cheat / 客户状态入口；不要扫描无关磁盘。\nboundary: 未收到用户明确任务前，不得自行执行生产动作。\nboundary: 不得修改共享 Cheat / Shared Runtime；客户数据、客户状态和共享能力必须保持边界。\ncapabilities: 仅按当前已启用的 shared capabilities 使用能力；不得把共享能力配置复制进客户目录。\n' "$client_id" "$workspace" > "$path"
+  printf 'OPS_BRAIN_BOOTSTRAP v1\nclient_id: %s\ndisplay_name: 测试客户\nworkspace: %s\nrole: Ops Brain / 运营大脑\nworkspace_type: 客户级长期运营工作区，不是普通代码仓库会话。\nprimary_core: XBuilderLAB/cheat-on-content；拥有最终运营判断权。\nstate_entry: 当前客户 workspace/.cheat-state.json 是客户运营状态唯一事实源。\nauthority: Doctor 等 shared capabilities 只能返回 evidence/diagnosis，必须回到 Cheat Core 后才能形成最终判断。\nboundary: 未收到用户明确任务前，不得自行执行生产动作。\nboundary: 不得修改全局只读 Cheat implementation；客户数据、客户状态和共享能力必须保持边界。\ncapabilities: 仅按当前已启用的 shared capabilities 使用能力；不得把共享能力配置复制进客户目录。\n' "$client_id" "$workspace" > "$path"
   printf '%s\n' "$path"
 }
 
@@ -45,6 +54,10 @@ run_agent() {
   [[ "$(<"$pwd_file.env")" == configured ]]
   [[ "$(<"$pwd_file.tikhub")" == "$TEST_HOME/.local/bin/tikhub" ]]
   grep -Fx -- '--append-system-prompt' "$pwd_file.argv"
+  grep -Fx -- '--setting-sources' "$pwd_file.argv"
+  grep -Fx -- 'project' "$pwd_file.argv"
+  grep -Fx -- '--plugin-dir' "$pwd_file.argv"
+  grep -Fx -- 'ops-brain-runtime:ops-brain-core' "$pwd_file.argv"
   grep -Fx -- 'OPS_BRAIN_BOOTSTRAP v1' "$pwd_file.argv"
   grep -Fx -- "client_id: $client_id" "$pwd_file.argv"
   grep -Fx -- 'role: Ops Brain / 运营大脑' "$pwd_file.argv"
@@ -78,6 +91,9 @@ invalid_utf8_bootstrap="$(make_bootstrap invalid-utf8 "$WORK_A")"
 printf '\377' >> "$invalid_utf8_bootstrap"
 if HOME="$TEST_HOME" OPS_BRAIN_BASE_CLAUDE="$TEST_HOME/bin/claude" OPS_BRAIN_AGENT_STATE_ROOT="$STATE" OPS_BRAIN_FAKE_PWD="$TMP/invalid-utf8.pwd" "$LAUNCHER" invalid-utf8 "$WORK_A" "$FAKE" "$invalid_utf8_bootstrap"; then exit 1; else [[ $? -eq 20 ]]; fi
 [[ ! -e "$TMP/invalid-utf8.pwd" ]]
+missing_runtime_bootstrap="$(make_bootstrap missing-runtime "$WORK_MISSING")"
+if HOME="$TEST_HOME" OPS_BRAIN_BASE_CLAUDE="$TEST_HOME/bin/claude" OPS_BRAIN_AGENT_STATE_ROOT="$STATE" OPS_BRAIN_FAKE_PWD="$TMP/missing-runtime.pwd" "$LAUNCHER" missing-runtime "$WORK_MISSING" "$FAKE" "$missing_runtime_bootstrap"; then exit 1; else [[ $? -eq 21 ]]; fi
+[[ ! -e "$TMP/missing-runtime.pwd" ]]
 
 client_a_bootstrap="$(make_bootstrap client-a "$WORK_A")"
 client_b_bootstrap="$(make_bootstrap client-b "$WORK_B")"

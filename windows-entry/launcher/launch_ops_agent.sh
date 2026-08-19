@@ -6,6 +6,9 @@ STATE_ROOT="${OPS_BRAIN_AGENT_STATE_ROOT:-/home/rong/projects/content-ops-lab/op
 ENV_FILE="$HOME/.config/claude-deepseek/env"
 BASE_CLAUDE="${OPS_BRAIN_BASE_CLAUDE:-/home/rong/.local/bin/claude}"
 SHARED_CAPABILITY_MANIFEST="${OPS_BRAIN_SHARED_CAPABILITY_MANIFEST:-/home/rong/projects/content-ops-lab/ops-brain-manager/shared-capabilities/manifest.json}"
+RUNTIME_VALIDATOR="${OPS_BRAIN_RUNTIME_VALIDATOR:-/home/rong/projects/content-ops-lab/ops-brain-manager/ops_brain_runtime.py}"
+AUTHORITY_PLUGIN="${OPS_BRAIN_AUTHORITY_PLUGIN:-/home/rong/projects/content-ops-lab/ops-brain-manager/runtime/ops-brain-runtime}"
+PRIMARY_AGENT="${OPS_BRAIN_PRIMARY_AGENT:-ops-brain-runtime:ops-brain-core}"
 export PATH="$HOME/.local/bin:$PATH"
 
 fail() { printf 'Ops Brain Agent error: %s\n' "$1" >&2; exit "${2:-2}"; }
@@ -56,8 +59,28 @@ for capability in manifest.get("capabilities", []):
                 value = value[1:-1]
             env[key] = value
 bootstrap = Path(sys.argv[3]).read_text(encoding="utf-8")
-raise SystemExit(subprocess.run([sys.argv[2], "--append-system-prompt", bootstrap], env=env).returncode)
+command = [
+    sys.argv[2],
+    "--setting-sources", "project",
+    "--plugin-dir", os.environ["OPS_BRAIN_AUTHORITY_PLUGIN"],
+    "--agent", os.environ["OPS_BRAIN_PRIMARY_AGENT"],
+    "--append-system-prompt", bootstrap,
+]
+raise SystemExit(subprocess.run(command, env=env).returncode)
 PY
+}
+validate_client_runtime() {
+  [[ -f "$RUNTIME_VALIDATOR" ]] || fail 'client runtime validator is missing' 21
+  python3 "$RUNTIME_VALIDATOR" --workspace "$WORKSPACE" --json >/dev/null \
+    || fail 'client Cheat runtime is not READY; initialize or repair before launch' 21
+}
+validate_authority_runtime() {
+  [[ -f "$AUTHORITY_PLUGIN/.claude-plugin/plugin.json" ]] || fail 'Ops Brain authority plugin manifest is missing' 22
+  [[ -f "$AUTHORITY_PLUGIN/agents/ops-brain-core.md" ]] || fail 'Ops Brain primary agent is missing' 22
+  [[ -f "$AUTHORITY_PLUGIN/agents/doctor-evidence.md" ]] || fail 'Ops Brain Doctor evidence agent is missing' 22
+  [[ "$PRIMARY_AGENT" == 'ops-brain-runtime:ops-brain-core' ]] || fail 'unsupported primary agent override' 22
+  export OPS_BRAIN_AUTHORITY_PLUGIN="$AUTHORITY_PLUGIN"
+  export OPS_BRAIN_PRIMARY_AGENT="$PRIMARY_AGENT"
 }
 validate_bootstrap() {
   python3 - "$CLIENT_ID" "$WORKSPACE" "$BOOTSTRAP_FILE" <<'PY'
@@ -81,8 +104,10 @@ try:
         f"client_id: {client_id}",
         f"workspace: {workspace}",
         "role: Ops Brain / 运营大脑",
+        "primary_core: XBuilderLAB/cheat-on-content；拥有最终运营判断权。",
+        "state_entry: 当前客户 workspace/.cheat-state.json 是客户运营状态唯一事实源。",
         "boundary: 未收到用户明确任务前，不得自行执行生产动作。",
-        "boundary: 不得修改共享 Cheat / Shared Runtime；客户数据、客户状态和共享能力必须保持边界。",
+        "boundary: 不得修改全局只读 Cheat implementation；客户数据、客户状态和共享能力必须保持边界。",
     }
     if required.difference(text.splitlines()):
         raise ValueError("bootstrap client identity or required contract is invalid")
@@ -111,6 +136,8 @@ diagnose() {
   printf 'deepseek_env_exists=%s\n' "$([[ -f "$ENV_FILE" ]] && echo true || echo false)"
   printf 'claude_exists=%s\n' "$([[ -x "$BASE_CLAUDE" ]] && echo true || echo false)"
   printf 'shared_capability_manifest_exists=%s\n' "$([[ -f "$SHARED_CAPABILITY_MANIFEST" ]] && echo true || echo false)"
+  printf 'runtime_validator_exists=%s\n' "$([[ -f "$RUNTIME_VALIDATOR" ]] && echo true || echo false)"
+  printf 'authority_plugin_exists=%s\n' "$([[ -f "$AUTHORITY_PLUGIN/.claude-plugin/plugin.json" ]] && echo true || echo false)"
   printf 'tikhub_exists=%s\n' "$([[ -x "$HOME/.local/bin/tikhub" ]] && echo true || echo false)"
   [[ -d "$STATE_ROOT" ]] || return 0
   for lock in "$STATE_ROOT"/*.lock; do
@@ -145,6 +172,8 @@ wait_for_file "$AGENT_COMMAND" || fail 'agent_command is unavailable after bound
 [[ -f "$ENV_FILE" ]] || fail 'DeepSeek environment file is missing' 6
 wait_for_file "$BASE_CLAUDE" || fail 'Claude executable is unavailable after bounded retry' 5
 validate_bootstrap || exit $?
+validate_client_runtime
+validate_authority_runtime
 mkdir -p -- "$STATE_ROOT"
 if ! mkdir -- "$LOCK_DIR" 2>/dev/null; then
   [[ ! -L "$LOCK_DIR" ]] || fail 'unsafe symbolic-link session lock' 2
@@ -159,7 +188,7 @@ printf 'Current client: %s\nCurrent workspace: %s\nOps Brain bootstrap verified;
 if [[ -f "$SHARED_CAPABILITY_MANIFEST" ]]; then
   run_agent_with_shared_capability_env
 else
-  "$AGENT_COMMAND" --append-system-prompt "$(<"$BOOTSTRAP_FILE")"
+  "$AGENT_COMMAND" --setting-sources project --plugin-dir "$AUTHORITY_PLUGIN" --agent "$PRIMARY_AGENT" --append-system-prompt "$(<"$BOOTSTRAP_FILE")"
 fi
 exit_code=$?
 printf 'Claude Code exited with code: %s\n' "$exit_code"

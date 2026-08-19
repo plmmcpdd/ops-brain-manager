@@ -43,9 +43,11 @@ function Get-OpsBootstrapText {
         ('workspace: ' + [string]$Client.workspace)
         'role: Ops Brain / 运营大脑'
         'workspace_type: 客户级长期运营工作区，不是普通代码仓库会话。'
-        'state_entry: 先读取并理解当前客户工作区中的 Cheat / 客户状态入口；不要扫描无关磁盘。'
+        'primary_core: XBuilderLAB/cheat-on-content；拥有最终运营判断权。'
+        'state_entry: 当前客户 workspace/.cheat-state.json 是客户运营状态唯一事实源。'
+        'authority: Doctor 等 shared capabilities 只能返回 evidence/diagnosis，必须回到 Cheat Core 后才能形成最终判断。'
         'boundary: 未收到用户明确任务前，不得自行执行生产动作。'
-        'boundary: 不得修改共享 Cheat / Shared Runtime；客户数据、客户状态和共享能力必须保持边界。'
+        'boundary: 不得修改全局只读 Cheat implementation；客户数据、客户状态和共享能力必须保持边界。'
         'capabilities: 仅按当前已启用的 shared capabilities 使用能力；不得把共享能力配置复制进客户目录。'
     ) -join "`n") + "`n"
 }

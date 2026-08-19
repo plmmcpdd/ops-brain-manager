@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "primary": {
+    "id": "xbuilderlab-cheat-on-content",
+    "state_owner": "client-workspace",
+    "final_authority": true,
+    "owned_operations": [
+      "benchmark",
+      "next-post",
+      "topic-selection",
+      "draft-adoption",
+      "account-diagnosis",
+      "viral-decomposition",
+      "status",
+      "retrospective",
+      "trends"
+    ]
+  },
+  "providers": {
+    "social-account-doctor": {
+      "role": "evidence-diagnosis",
+      "final_authority": false,
+      "state_write": false,
+      "return_to": "xbuilderlab-cheat-on-content"
+    }
+  },
+  "missing_state": "fail-closed"
+}

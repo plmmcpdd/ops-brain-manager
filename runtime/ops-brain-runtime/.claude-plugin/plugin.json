@@ -1,0 +1,7 @@
+{
+  "name": "ops-brain-runtime",
+  "description": "Fail-closed client Ops Brain runtime with Cheat primary authority and subordinate evidence providers",
+  "author": {
+    "name": "Ops Brain Manager"
+  }
+}
