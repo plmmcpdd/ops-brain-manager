@@ -11,6 +11,8 @@ AUTHORITY_PLUGIN="${OPS_BRAIN_AUTHORITY_PLUGIN:-/home/rong/projects/content-ops-
 PRIMARY_AGENT="${OPS_BRAIN_PRIMARY_AGENT:-ops-brain-runtime:ops-brain-core}"
 CHEAT_RUNTIME="${OPS_BRAIN_CHEAT_RUNTIME:-/home/rong/tools/cheat-on-content}"
 DOCTOR_RUNTIME="${OPS_BRAIN_DOCTOR_RUNTIME:-/home/rong/.claude/skills/social-account-doctor}"
+DOCTOR_SCRIPTS="$DOCTOR_RUNTIME/scripts"
+DOCTOR_REFERENCES="$DOCTOR_RUNTIME/references"
 export PATH="$HOME/.local/bin:$PATH"
 
 fail() { printf 'Ops Brain Agent error: %s\n' "$1" >&2; exit "${2:-2}"; }
@@ -60,14 +62,21 @@ for capability in manifest.get("capabilities", []):
             if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
                 value = value[1:-1]
             env[key] = value
+visual_keys = ("VIDEO_ANALYSIS_API_KEY", "VIDEO_ANALYSIS_BASE_URL", "VIDEO_ANALYSIS_MODEL_NAME")
+visual_present = sum(bool(env.get(key)) for key in visual_keys)
+env["OPS_BRAIN_VISUAL_CONFIG_STATUS"] = (
+    "READY" if visual_present == len(visual_keys) else "MISSING" if visual_present == 0 else "PARTIAL"
+)
 bootstrap = Path(sys.argv[3]).read_text(encoding="utf-8")
 command = [
     sys.argv[2],
     "--setting-sources", "project",
     "--plugin-dir", os.environ["OPS_BRAIN_AUTHORITY_PLUGIN"],
     "--agent", os.environ["OPS_BRAIN_PRIMARY_AGENT"],
+    "--disable-slash-commands",
     "--add-dir", os.environ["OPS_BRAIN_CHEAT_RUNTIME"],
-    "--add-dir", os.environ["OPS_BRAIN_DOCTOR_RUNTIME"],
+    "--add-dir", os.environ["OPS_BRAIN_DOCTOR_SCRIPTS"],
+    "--add-dir", os.environ["OPS_BRAIN_DOCTOR_REFERENCES"],
     "--append-system-prompt", bootstrap,
 ]
 raise SystemExit(subprocess.run(command, env=env).returncode)
@@ -85,10 +94,14 @@ validate_authority_runtime() {
   [[ "$PRIMARY_AGENT" == 'ops-brain-runtime:ops-brain-core' ]] || fail 'unsupported primary agent override' 22
   [[ -f "$CHEAT_RUNTIME/SKILL.md" ]] || fail 'shared read-only Cheat implementation is missing' 22
   [[ -f "$DOCTOR_RUNTIME/SKILL.md" ]] || fail 'Doctor evidence implementation is missing' 22
+  [[ -d "$DOCTOR_SCRIPTS" ]] || fail 'Doctor evidence scripts are missing' 22
+  [[ -d "$DOCTOR_REFERENCES" ]] || fail 'Doctor evidence references are missing' 22
   export OPS_BRAIN_AUTHORITY_PLUGIN="$AUTHORITY_PLUGIN"
   export OPS_BRAIN_PRIMARY_AGENT="$PRIMARY_AGENT"
   export OPS_BRAIN_CHEAT_RUNTIME="$CHEAT_RUNTIME"
   export OPS_BRAIN_DOCTOR_RUNTIME="$DOCTOR_RUNTIME"
+  export OPS_BRAIN_DOCTOR_SCRIPTS="$DOCTOR_SCRIPTS"
+  export OPS_BRAIN_DOCTOR_REFERENCES="$DOCTOR_REFERENCES"
 }
 validate_bootstrap() {
   python3 - "$CLIENT_ID" "$WORKSPACE" "$BOOTSTRAP_FILE" <<'PY'
@@ -196,7 +209,7 @@ printf 'Current client: %s\nCurrent workspace: %s\nOps Brain bootstrap verified;
 if [[ -f "$SHARED_CAPABILITY_MANIFEST" ]]; then
   run_agent_with_shared_capability_env
 else
-  "$AGENT_COMMAND" --setting-sources project --plugin-dir "$AUTHORITY_PLUGIN" --agent "$PRIMARY_AGENT" --add-dir "$CHEAT_RUNTIME" --add-dir "$DOCTOR_RUNTIME" --append-system-prompt "$(<"$BOOTSTRAP_FILE")"
+  "$AGENT_COMMAND" --setting-sources project --plugin-dir "$AUTHORITY_PLUGIN" --agent "$PRIMARY_AGENT" --disable-slash-commands --add-dir "$CHEAT_RUNTIME" --add-dir "$DOCTOR_SCRIPTS" --add-dir "$DOCTOR_REFERENCES" --append-system-prompt "$(<"$BOOTSTRAP_FILE")"
 fi
 exit_code=$?
 printf 'Claude Code exited with code: %s\n' "$exit_code"

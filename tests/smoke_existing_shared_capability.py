@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only discovery smoke in an existing Unicode customer workspace."""
+"""Read-only authority smoke in an existing Unicode customer workspace."""
 import hashlib
 import json
 import os
@@ -27,16 +27,30 @@ def snapshot() -> list[tuple[str, int, int, str]]:
 before = snapshot()
 process = subprocess.run(
     [
-        "/home/rong/.local/bin/claude-deepseek", "--no-session-persistence", "--tools", "",
-        "--max-budget-usd", "0.02", "--output-format", "stream-json", "--verbose", "-p", "Reply OK only.",
+        "/home/rong/.local/bin/claude-deepseek",
+        "--setting-sources", "project",
+        "--plugin-dir", str(ROOT / "runtime" / "ops-brain-runtime"),
+        "--agent", "ops-brain-runtime:ops-brain-core",
+        "--disable-slash-commands",
+        "--add-dir", "/home/rong/tools/cheat-on-content",
+        "--add-dir", "/home/rong/.claude/skills/social-account-doctor/scripts",
+        "--add-dir", "/home/rong/.claude/skills/social-account-doctor/references",
+        "--disallowedTools", "Write,Edit,Bash,WebFetch,WebSearch",
+        "--no-session-persistence",
+        "--max-budget-usd", "0.15", "--output-format", "stream-json", "--verbose", "-p", "Reply OK only.",
     ],
     cwd=workspace, text=True, capture_output=True, timeout=120, check=True,
 )
 first = json.loads(process.stdout.splitlines()[0])
 assert first["type"] == "system" and first["subtype"] == "init"
-assert "social-account-doctor" in first["skills"]
+assert "social-account-doctor" not in first["skills"]
+assert "Skill" not in first["tools"]
+assert "ops-brain-runtime:doctor-evidence" in first["agents"]
 assert snapshot() == before
 print(json.dumps({
     "client_id": client["id"], "display_name": client["name"], "workspace": str(workspace),
-    "skill_available": True, "workspace_unchanged": True,
+    "root_doctor_skill_available": False,
+    "root_skill_tool_available": False,
+    "doctor_subagent_registered": True,
+    "workspace_unchanged": True,
 }, ensure_ascii=False))

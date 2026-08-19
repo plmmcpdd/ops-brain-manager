@@ -9,6 +9,8 @@
       "configuration_file": ".env",
       "source": "https://github.com/JuneYaooo/social-account-doctor.git",
       "pinned_commit": "88bb251248ca05d7e17c5eed6a7d3885d938180e",
+      "expected_installed_content_sha256": "c0abd88f0c1e60c09bd57fae6a8babd969e6d145e5364b393612db3c9813709c",
+      "expected_hashed_file_count": 52,
       "license": "MIT",
       "local_patches": [
         {

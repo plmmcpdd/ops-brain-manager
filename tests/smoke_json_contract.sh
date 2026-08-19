@@ -42,7 +42,9 @@ assert payloads["CREATE_JSON"]["ok"] and payloads["CREATE_JSON"]["data"]["origin
 assert payloads["ATTACH_JSON"]["ok"] and payloads["ATTACH_JSON"]["data"]["origin"] == "attached"
 assert payloads["SHOW_JSON"]["data"] == payloads["CREATE_JSON"]["data"]
 assert payloads["DOCTOR_JSON"]["ok"] and payloads["DOCTOR_JSON"]["data"]["clients_checked"] == 2
-assert payloads["RESOLVE_JSON"]["ok"] and payloads["RESOLVE_JSON"]["data"]["launch_allowed"]
+assert payloads["RESOLVE_JSON"]["ok"]
+assert not payloads["RESOLVE_JSON"]["data"]["launch_allowed"]
+assert payloads["RESOLVE_JSON"]["data"]["runtime"]["status"] == "NOT_INITIALIZED"
 assert int(os.environ["DUPLICATE_EXIT"]) != 0
 assert not payloads["DUPLICATE_JSON"]["ok"] and payloads["DUPLICATE_JSON"]["data"] is None
 with open(os.environ["REGISTRY"], encoding="utf-8") as handle:

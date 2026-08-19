@@ -2,7 +2,7 @@
 
 Ops Brain clients share capability code through the agent runtime, while reports and assets remain in each client's current workspace.
 
-Shared capabilities are subordinate evidence providers, not operating brains. Standard client sessions hide the user-global Skill directory with Claude Code project-only settings and load the Manager-owned `ops-brain-runtime` plugin explicitly. The root session is `ops-brain-core`; Doctor is reachable only as the internal `doctor-evidence` agent and must return `final_authority: false` to Core. Capability availability never grants state ownership or final decision authority.
+Shared capabilities are subordinate evidence providers, not operating brains. Standard client sessions disable the Skill system, remove the root `Skill` tool, scope root delegation to `ops-brain-runtime:doctor-evidence`, and load the Manager-owned plugin explicitly. The Doctor Skill root is not added to the session; only its `scripts/` and `references/` implementation surfaces are available to the subordinate adapter. Doctor must return `final_authority: false` to Core. Capability availability never grants state ownership or final decision authority.
 
 The authoritative distribution definition is `shared-capabilities/manifest.json`. The first verified capability is `social-account-doctor`, installed once at `~/.claude/skills/social-account-doctor` from the pinned upstream commit. Do not copy it into customer workspaces. The runtime is upstream code plus the manifest-declared local compatibility patches; it must not be represented as an unmodified upstream build.
 
@@ -40,6 +40,7 @@ For cover sets, invoke `analyze_image.py` once with all paths. The Ops Brain run
 
 The Agent launcher starts Claude after `cd "$WORKSPACE"`. Upstream writes completed business outputs to `./reports` and `./assets`; therefore shared code does not imply shared customer output.
 The launcher also adds `~/.local/bin` to `PATH` and loads each manifest-declared Skill `.env` into the Claude process through an allowlist. Secrets stay in the runtime configuration and are not copied to the workspace.
+It also derives `OPS_BRAIN_VISUAL_CONFIG_STATUS=READY|PARTIAL|MISSING` from presence only. Doctor uses that marker to classify configuration failures without printing values. Environment is captured at process start; after capability configuration changes, close the old Claude session and start a new standard Ops Brain session.
 
 ## TikHub failure contract
 

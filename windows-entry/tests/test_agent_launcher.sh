@@ -7,7 +7,8 @@ TEST_HOME="$TMP/home"
 mkdir -p "$TEST_HOME/.config/claude-deepseek" "$TEST_HOME/bin"
 mkdir -p "$TEST_HOME/.claude/skills/social-account-doctor" "$TEST_HOME/.local/bin"
 : > "$TEST_HOME/.config/claude-deepseek/env"
-printf 'TIKHUB_API_KEY=configured\n' > "$TEST_HOME/.claude/skills/social-account-doctor/.env"
+mkdir -p "$TEST_HOME/.claude/skills/social-account-doctor/scripts" "$TEST_HOME/.claude/skills/social-account-doctor/references"
+printf 'TIKHUB_API_KEY=configured\nVIDEO_ANALYSIS_API_KEY=configured\nVIDEO_ANALYSIS_BASE_URL=https://example.invalid/api/v3\nVIDEO_ANALYSIS_MODEL_NAME=configured-model\n' > "$TEST_HOME/.claude/skills/social-account-doctor/.env"
 printf '{"capabilities":[{"install_location":"%s","configuration_file":".env"}]}\n' "$TEST_HOME/.claude/skills/social-account-doctor" > "$TEST_HOME/capabilities.json"
 export OPS_BRAIN_SHARED_CAPABILITY_MANIFEST="$TEST_HOME/capabilities.json"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$TEST_HOME/.local/bin/tikhub"
@@ -32,6 +33,7 @@ cat > "$FAKE" <<'EOF'
 if [[ -n "${OPS_BRAIN_METADATA_COPY:-}" ]]; then cp -- "${OPS_BRAIN_AGENT_STATE_ROOT}/${OPS_BRAIN_EXPECTED_CLIENT_ID}.lock/metadata.json" "$OPS_BRAIN_METADATA_COPY"; fi
 pwd > "${OPS_BRAIN_FAKE_PWD:?}"
 printf '%s\n' "${TIKHUB_API_KEY:-missing}" > "${OPS_BRAIN_FAKE_PWD}.env"
+printf '%s\n' "${VIDEO_ANALYSIS_API_KEY:+PRESENT}" "${VIDEO_ANALYSIS_BASE_URL:+PRESENT}" "${VIDEO_ANALYSIS_MODEL_NAME:+PRESENT}" "${OPS_BRAIN_VISUAL_CONFIG_STATUS:-MISSING}" > "${OPS_BRAIN_FAKE_PWD}.visual-env"
 command -v tikhub > "${OPS_BRAIN_FAKE_PWD}.tikhub"
 printf '%s\n' "$@" > "${OPS_BRAIN_FAKE_PWD}.argv"
 sleep "${OPS_BRAIN_FAKE_SLEEP:-0}"
@@ -52,15 +54,22 @@ run_agent() {
   HOME="$TEST_HOME" OPS_BRAIN_BASE_CLAUDE="$TEST_HOME/bin/claude" OPS_BRAIN_AGENT_STATE_ROOT="$STATE" OPS_BRAIN_FAKE_PWD="$pwd_file" "$LAUNCHER" "$client_id" "$WORK_A" "$FAKE" "$bootstrap"
   [[ "$(<"$pwd_file")" == "$WORK_A" ]]
   [[ "$(<"$pwd_file.env")" == configured ]]
+  [[ "$(sed -n '1p' "$pwd_file.visual-env")" == PRESENT ]]
+  [[ "$(sed -n '2p' "$pwd_file.visual-env")" == PRESENT ]]
+  [[ "$(sed -n '3p' "$pwd_file.visual-env")" == PRESENT ]]
+  [[ "$(sed -n '4p' "$pwd_file.visual-env")" == READY ]]
   [[ "$(<"$pwd_file.tikhub")" == "$TEST_HOME/.local/bin/tikhub" ]]
   grep -Fx -- '--append-system-prompt' "$pwd_file.argv"
   grep -Fx -- '--setting-sources' "$pwd_file.argv"
   grep -Fx -- 'project' "$pwd_file.argv"
   grep -Fx -- '--plugin-dir' "$pwd_file.argv"
   grep -Fx -- 'ops-brain-runtime:ops-brain-core' "$pwd_file.argv"
+  grep -Fx -- '--disable-slash-commands' "$pwd_file.argv"
   grep -Fx -- '--add-dir' "$pwd_file.argv"
   grep -Fx -- '/home/rong/tools/cheat-on-content' "$pwd_file.argv"
-  grep -Fx -- '/home/rong/.claude/skills/social-account-doctor' "$pwd_file.argv"
+  grep -Fx -- '/home/rong/.claude/skills/social-account-doctor/scripts' "$pwd_file.argv"
+  grep -Fx -- '/home/rong/.claude/skills/social-account-doctor/references' "$pwd_file.argv"
+  ! grep -Fx -- '/home/rong/.claude/skills/social-account-doctor' "$pwd_file.argv"
   grep -Fx -- 'OPS_BRAIN_BOOTSTRAP v1' "$pwd_file.argv"
   grep -Fx -- "client_id: $client_id" "$pwd_file.argv"
   grep -Fx -- 'role: Ops Brain / 运营大脑' "$pwd_file.argv"

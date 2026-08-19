@@ -36,10 +36,22 @@ class AuthorityContractTests(unittest.TestCase):
         self.assertIn('"--plugin-dir"', self.launcher)
         self.assertIn('"--agent"', self.launcher)
         self.assertIn("ops-brain-runtime:ops-brain-core", self.launcher)
-        self.assertNotIn("--disable-slash-commands", self.launcher)
+        self.assertIn('"--disable-slash-commands"', self.launcher)
+        self.assertIn('os.environ["OPS_BRAIN_DOCTOR_SCRIPTS"]', self.launcher)
+        self.assertIn('os.environ["OPS_BRAIN_DOCTOR_REFERENCES"]', self.launcher)
+        self.assertNotIn('"--add-dir", os.environ["OPS_BRAIN_DOCTOR_RUNTIME"]', self.launcher)
+
+    def test_owner_attack_has_no_root_direct_doctor_skill_path(self):
+        frontmatter = self.core.split("---", 2)[1]
+        tools_line = next(line for line in frontmatter.splitlines() if line.startswith("tools:"))
+        self.assertNotIn("Skill", tools_line)
+        self.assertIn("Agent(ops-brain-runtime:doctor-evidence)", tools_line)
+        self.assertNotIn("tools: Agent,", tools_line)
+        self.assertIn("Direct Skill invocation is structurally unavailable", self.core)
+        self.assertNotIn("Skill", self.doctor.split("---", 2)[1].split("tools:", 1)[1])
 
     def test_core_requires_doctor_return_before_final_judgment(self):
-        self.assertIn("Invoke the `ops-brain-runtime:doctor-evidence` agent", self.core)
+        self.assertIn("Invoke the only permitted subagent, `ops-brain-runtime:doctor-evidence`", self.core)
         self.assertIn("through the Agent tool", self.core)
         self.assertIn("Resume the relevant Cheat protocol", self.core)
         self.assertIn("You own the user-facing final answer", self.core)
@@ -50,6 +62,14 @@ class AuthorityContractTests(unittest.TestCase):
         self.assertIn("Never guess a client path", self.doctor)
         self.assertIn("Do not open client Cheat state", self.doctor)
         self.assertIn("immediately return an unavailable result", self.doctor)
+        self.assertIn("Do not read the installed root `SKILL.md`", self.doctor)
+
+    def test_visual_status_is_safe_and_classified(self):
+        self.assertIn("OPS_BRAIN_VISUAL_CONFIG_STATUS", self.launcher)
+        for status in ("READY", "PARTIAL", "MISSING"):
+            self.assertIn(status, self.launcher)
+        for error in ("CONFIG_MISSING", "ENV_PROPAGATION_FAILED", "ENDPOINT_ERROR", "MODEL_ERROR", "AUTH_ERROR", "SCRIPT_ERROR"):
+            self.assertIn(error, self.doctor)
 
     def test_missing_state_policy_is_fail_closed(self):
         self.assertEqual(self.contract["missing_state"], "fail-closed")

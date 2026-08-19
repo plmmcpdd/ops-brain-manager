@@ -20,17 +20,22 @@ try {
         agent_command_wsl = '/home/rong/.local/bin/claude-deepseek'
     }
     $codeWorkspace = New-OpsWorkspace -ProjectionRoot $projection -Launch $created.data -Runtime $runtime
-    $events = & wsl.exe -d Ubuntu-E --cd $workspace -- /home/rong/.local/bin/claude-deepseek --no-session-persistence --tools '' --max-budget-usd 0.02 --output-format stream-json --verbose -p 'Reply OK only.'
+    $authorityPlugin = ($managerRoot -replace '\\','/' -replace '^//wsl.localhost/Ubuntu-E','') + '/runtime/ops-brain-runtime'
+    $events = & wsl.exe -d Ubuntu-E --cd $workspace -- /home/rong/.local/bin/claude-deepseek --setting-sources project --plugin-dir $authorityPlugin --agent ops-brain-runtime:ops-brain-core --disable-slash-commands --add-dir /home/rong/tools/cheat-on-content --add-dir /home/rong/.claude/skills/social-account-doctor/scripts --add-dir /home/rong/.claude/skills/social-account-doctor/references --disallowedTools Write,Edit,Bash,WebFetch,WebSearch --no-session-persistence --max-budget-usd 0.02 --output-format stream-json --verbose -p 'Reply OK only.'
     if ($LASTEXITCODE -ne 0) { throw 'Claude discovery smoke failed' }
     $init = (@($events)[0] | ConvertFrom-Json)
     if ($init.type -ne 'system' -or $init.subtype -ne 'init') { throw 'Claude init event missing' }
-    if ($init.skills -notcontains 'social-account-doctor') { throw 'social-account-doctor not discovered' }
+    if ($init.skills -contains 'social-account-doctor') { throw 'root Doctor Skill bypass is available' }
+    if ($init.tools -contains 'Skill') { throw 'root generic Skill tool is available' }
+    if ($init.agents -notcontains 'ops-brain-runtime:doctor-evidence') { throw 'doctor-evidence subagent is not registered' }
     if (Test-Path -LiteralPath (Join-Path $windowsTemp 'workspace\.claude\skills\social-account-doctor')) { throw 'Skill was copied into client workspace' }
     [pscustomobject]@{
         client_id = $created.data.client_id
         projection = (Test-Path -LiteralPath $projection)
         code_workspace = (Test-Path -LiteralPath $codeWorkspace)
-        skill_inherited = $true
+        root_doctor_skill_available = $false
+        root_skill_tool_available = $false
+        doctor_subagent_registered = $true
         per_client_install = $false
     } | ConvertTo-Json -Compress
 } finally {

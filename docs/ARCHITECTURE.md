@@ -15,6 +15,7 @@ Windows projection
   -> Claude --setting-sources project
             --plugin-dir runtime/ops-brain-runtime
             --agent ops-brain-runtime:ops-brain-core
+            --disable-slash-commands
   -> Ops Brain Core
        -> client Cheat state and upstream Cheat protocol
        -> optional doctor-evidence subagent
@@ -22,7 +23,7 @@ Windows projection
        -> Core final judgment
 ```
 
-Project-only setting sources remove user-global `cheat-*` and `social-account-doctor` Skills from the client session. This prevents natural-language competition between peers. The explicit root agent makes every user turn enter Core; Doctor exists only as a subordinate Task agent and cannot directly terminate the user operation.
+Project-only setting sources are not treated as a security boundary: live Claude Code 2.1.217 proved that a root `Skill` tool could still load a hidden global Skill in an interactive session. The launcher therefore disables Skills/slash commands, the root agent has no `Skill` tool, and its `Agent` tool is scoped only to `ops-brain-runtime:doctor-evidence`. The Doctor Skill root is not an additional directory; only its scripts and references are exposed for the subordinate adapter. Cheat protocols remain available by explicit read-only paths rather than Skill invocation.
 
 The client runtime gate runs before Claude starts. Missing or invalid state exits explicitly with code 21. Missing authority plugin material exits with code 22.
 
