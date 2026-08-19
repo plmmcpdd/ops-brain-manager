@@ -80,8 +80,12 @@ class RuntimeLifecycleTests(unittest.TestCase):
         state["calibration_samples"] = 7
         (self.workspace / ".cheat-state.json").write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
         (self.workspace / "rubric_notes.md").write_text("client-a-only", encoding="utf-8")
+        (self.workspace / "predictions" / "client-a-only.md").write_text("private prediction", encoding="utf-8")
         self.assertEqual((other / ".cheat-state.json").read_bytes(), other_state_before)
         self.assertEqual((other / "rubric_notes.md").read_bytes(), other_rubric_before)
+        self.assertFalse((other / "predictions" / "client-a-only.md").exists())
+        self.assertEqual(inspect_runtime(self.workspace)["status"], "READY")
+        self.assertEqual(inspect_runtime(other)["status"], "READY")
 
 
 if __name__ == "__main__":
