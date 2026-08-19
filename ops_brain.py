@@ -19,6 +19,15 @@ from ops_brain_publishos.client import PerformanceClient
 from ops_brain_publishos.config import load_config, load_token
 from ops_brain_publishos.errors import PublishOSError
 from ops_brain_publishos.sync import is_due, pending_content_refs, quarantine, sync_one
+from ops_brain_runtime import (
+    CONTENT_FORMS,
+    RuntimeLifecycleError,
+    RuntimeProfile,
+    initialize_runtime,
+    inspect_runtime,
+    repair_runtime,
+)
+from ops_brain_provenance import ProvenanceError, build_attestation, write_attestation
 
 REGISTRY_VERSION = 1
 DEFAULT_REGISTRY = Path(__file__).resolve().parent / ".ops-brain" / "clients.json"
@@ -296,10 +305,16 @@ def resolve_launch(data: dict[str, Any], selector: str) -> dict[str, Any]:
     workspace = client.get("workspace")
     workspace_exists = isinstance(workspace, str) and Path(workspace).is_dir()
     status = client.get("status")
+    runtime = inspect_runtime(Path(workspace)) if workspace_exists else {
+        "status": "INVALID", "state_path": str(Path(workspace or "") / ".cheat-state.json"),
+        "issues": ["workspace does not exist"],
+    }
     if status != "active":
         reason = "client is not active"
     elif not workspace_exists:
         reason = "workspace does not exist"
+    elif runtime["status"] != "READY":
+        reason = f"client Cheat runtime is {runtime['status']}; initialize or repair before launch"
     else:
         reason = "ready"
     return {
@@ -310,6 +325,7 @@ def resolve_launch(data: dict[str, Any], selector: str) -> dict[str, Any]:
         "workspace_exists": workspace_exists,
         "status": status,
         "reason": reason,
+        "runtime": runtime,
     }
 
 
@@ -335,11 +351,10 @@ def change_status(args: argparse.Namespace, status: str) -> int:
 
 def open_workspace(args: argparse.Namespace) -> int:
     client = find_client(load_registry(args.registry), args.client)
-    if client.get("status") != "active":
-        raise RegistryError("客户已归档；请先显式 restore 后再打开。")
-    workspace = Path(client.get("workspace", ""))
-    if not workspace.is_dir():
-        raise RegistryError("登记的工作区已不存在或不可访问；未启动任何程序。")
+    launch = resolve_launch(load_registry(args.registry), args.client)
+    if not launch["launch_allowed"]:
+        raise RegistryError(f"客户运行时未就绪；未启动任何程序：{launch['reason']}")
+    workspace = Path(client["workspace"])
     quoted = shlex.quote(str(workspace))
     if not args.app:
         print(f"客户：{client['name']}")
@@ -354,6 +369,59 @@ def open_workspace(args: argparse.Namespace) -> int:
         raise RegistryError(f"无法启动 {args.app!r}：{exc}；Registry 未修改。") from exc
     print(f"已请求用 {args.app} 打开 {client['name']}：{workspace}")
     return 0
+
+
+def runtime_status_data(registry_path: Path, selector: str) -> dict[str, Any]:
+    client = find_client(load_registry(registry_path), selector)
+    report = inspect_runtime(Path(client["workspace"]))
+    return {"client_id": client["id"], "display_name": client["name"], **report}
+
+
+def runtime_status(args: argparse.Namespace) -> int:
+    report = runtime_status_data(args.registry, args.client)
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0 if report["status"] == "READY" else 1
+
+
+def runtime_inventory_data(registry_path: Path) -> dict[str, Any]:
+    data = load_registry(registry_path)
+    clients = []
+    counts: dict[str, int] = {}
+    for client in data["clients"]:
+        if not isinstance(client, dict) or not isinstance(client.get("workspace"), str):
+            continue
+        report = inspect_runtime(Path(client["workspace"]))
+        counts[report["status"]] = counts.get(report["status"], 0) + 1
+        clients.append({"client_id": client.get("id"), "display_name": client.get("name"), "registry_status": client.get("status"), **report})
+    return {"clients": clients, "counts": counts}
+
+
+def runtime_inventory(args: argparse.Namespace) -> int:
+    print(json.dumps(runtime_inventory_data(args.registry), ensure_ascii=False, indent=2))
+    return 0
+
+
+def runtime_initialize(args: argparse.Namespace) -> int:
+    client = find_client(load_registry(args.registry), args.client)
+    profile = RuntimeProfile(
+        content_form=args.content_form,
+        typical_duration_seconds=args.typical_duration_seconds,
+        cadence_days=args.cadence_days,
+        data_collection=args.data_collection,
+        pool_status=args.pool_status,
+        benchmark_status=args.benchmark_status,
+        hooks=args.hooks == "yes",
+    )
+    report = initialize_runtime(Path(client["workspace"]), args.cheat_runtime, profile)
+    print(json.dumps({"client_id": client["id"], **report}, ensure_ascii=False, indent=2))
+    return 0
+
+
+def runtime_repair(args: argparse.Namespace) -> int:
+    client = find_client(load_registry(args.registry), args.client)
+    report = repair_runtime(Path(client["workspace"]), args.cheat_runtime)
+    print(json.dumps({"client_id": client["id"], **report}, ensure_ascii=False, indent=2))
+    return 0 if report["status"] == "READY" else 1
 
 
 def _publishos_mapping(client: dict[str, Any]) -> str | None:
@@ -669,6 +737,14 @@ def capabilities(args: argparse.Namespace) -> int:
     return 0
 
 
+def capability_provenance(args: argparse.Namespace) -> int:
+    payload = build_attestation(args.manifest, args.capability)
+    target = Path(__file__).resolve().parent / ".ops-brain" / "capability-provenance" / f"{args.capability}.json"
+    write_attestation(target, payload)
+    print(json.dumps({**payload, "attestation_path": str(target)}, ensure_ascii=False, indent=2))
+    return 0
+
+
 def emit_json(payload: dict[str, Any]) -> None:
     """Windows PowerShell 5.1-safe: exactly one ASCII JSON object on stdout."""
     print(json.dumps(payload, ensure_ascii=True, separators=(",", ":")))
@@ -704,11 +780,38 @@ def run_json_command(args: argparse.Namespace) -> int:
             payload = resolve_launch(load_registry(args.registry), args.client)
             emit_json({"ok": True, "code": "ok", "data": payload, "error": None})
             return 0
+        if args.command == "runtime":
+            if args.runtime_command == "status":
+                payload = runtime_status_data(args.registry, args.client)
+                emit_json({"ok": True, "code": "ok", "data": payload, "error": None})
+                return 0 if payload["status"] == "READY" else 1
+            if args.runtime_command == "inventory":
+                emit_json({"ok": True, "code": "ok", "data": runtime_inventory_data(args.registry), "error": None})
+                return 0
+            if args.runtime_command == "initialize":
+                client = find_client(load_registry(args.registry), args.client)
+                profile = RuntimeProfile(
+                    content_form=args.content_form,
+                    typical_duration_seconds=args.typical_duration_seconds,
+                    cadence_days=args.cadence_days,
+                    data_collection=args.data_collection,
+                    pool_status=args.pool_status,
+                    benchmark_status=args.benchmark_status,
+                    hooks=args.hooks == "yes",
+                )
+                payload = initialize_runtime(Path(client["workspace"]), args.cheat_runtime, profile)
+                emit_json({"ok": True, "code": "ok", "data": {"client_id": client["id"], **payload}, "error": None})
+                return 0
+            if args.runtime_command == "repair":
+                client = find_client(load_registry(args.registry), args.client)
+                payload = repair_runtime(Path(client["workspace"]), args.cheat_runtime)
+                emit_json({"ok": True, "code": "ok", "data": {"client_id": client["id"], **payload}, "error": None})
+                return 0 if payload["status"] == "READY" else 1
         if args.command == "capabilities":
             emit_json({"ok": True, "code": "ok", "data": capabilities_report(args.manifest), "error": None})
             return 0
         raise RegistryError(f"JSON mode is not supported for {args.command}")
-    except RegistryError as exc:
+    except (RegistryError, RuntimeLifecycleError, ProvenanceError) as exc:
         emit_json({"ok": False, "code": "registry_error", "data": None, "error": str(exc)})
         print(str(exc), file=sys.stderr)
         return 2
@@ -750,10 +853,40 @@ def parser() -> argparse.ArgumentParser:
     command.add_argument("--client", required=True)
     command.add_argument("--json", dest="json_output", action="store_true")
     command.set_defaults(handler=lambda args: 0)
+    runtime = commands.add_parser("runtime", help="管理客户级 Cheat runtime 生命周期")
+    runtime_commands = runtime.add_subparsers(dest="runtime_command", required=True)
+    command = runtime_commands.add_parser("status", help="只读检查一个客户 runtime")
+    command.add_argument("--client", required=True)
+    command.add_argument("--json", dest="json_output", action="store_true")
+    command.set_defaults(handler=runtime_status)
+    command = runtime_commands.add_parser("inventory", help="只读分类所有登记客户")
+    command.add_argument("--json", dest="json_output", action="store_true")
+    command.set_defaults(handler=runtime_inventory)
+    command = runtime_commands.add_parser("initialize", help="显式配置并初始化客户 runtime")
+    command.add_argument("--client", required=True)
+    command.add_argument("--content-form", required=True, choices=sorted(CONTENT_FORMS))
+    command.add_argument("--typical-duration-seconds", type=int)
+    command.add_argument("--cadence-days", type=int)
+    command.add_argument("--data-collection", required=True, choices=("manual", "adapter"))
+    command.add_argument("--pool-status", required=True, choices=("none", "markdown", "notion"))
+    command.add_argument("--benchmark-status", required=True, choices=("none", "pending"))
+    command.add_argument("--hooks", required=True, choices=("yes", "no"))
+    command.add_argument("--cheat-runtime", type=Path, default=UPSTREAM_RUNTIME)
+    command.add_argument("--json", dest="json_output", action="store_true")
+    command.set_defaults(handler=runtime_initialize)
+    command = runtime_commands.add_parser("repair", help="只恢复缺失的生成物，不重建 state")
+    command.add_argument("--client", required=True)
+    command.add_argument("--cheat-runtime", type=Path, default=UPSTREAM_RUNTIME)
+    command.add_argument("--json", dest="json_output", action="store_true")
+    command.set_defaults(handler=runtime_repair)
     command = commands.add_parser("capabilities", help="只读检查共享能力；不影响 Core doctor")
     command.add_argument("--manifest", type=Path, default=CAPABILITY_MANIFEST)
     command.add_argument("--json", dest="json_output", action="store_true")
     command.set_defaults(handler=capabilities)
+    command = commands.add_parser("capability-provenance", help="记录共享能力非敏感安装内容身份")
+    command.add_argument("--capability", required=True)
+    command.add_argument("--manifest", type=Path, default=CAPABILITY_MANIFEST)
+    command.set_defaults(handler=capability_provenance)
     publishos = commands.add_parser("publishos", help="只读 PublishOS 本地数据桥")
     publishos_commands = publishos.add_subparsers(dest="publishos_command", required=True)
     command = publishos_commands.add_parser("link")
@@ -793,7 +926,7 @@ def main(argv: list[str] | None = None) -> int:
         return run_json_command(args)
     try:
         return args.handler(args)
-    except (RegistryError, PublishOSError) as exc:
+    except (RegistryError, RuntimeLifecycleError, ProvenanceError, PublishOSError) as exc:
         if getattr(args, "json_output", False):
             code = exc.code if isinstance(exc, PublishOSError) else "registry_error"
             emit_json({"ok": False, "code": code, "data": None, "error": str(exc)})

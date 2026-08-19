@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import ops_brain
+from ops_brain_runtime import RuntimeProfile, initialize_runtime
 from ops_brain_publishos.config import load_config, load_token
 from ops_brain_publishos.contract import validate_response
 from ops_brain_publishos.errors import PublishOSError
@@ -30,6 +31,13 @@ class RegistryTests(unittest.TestCase):
 
     def args(self, **values):
         return SimpleNamespace(registry=self.registry, **values)
+
+    def initialize_workspace(self, workspace):
+        return initialize_runtime(
+            workspace,
+            Path("/home/rong/tools/cheat-on-content"),
+            RuntimeProfile("short-text", None, 2, "manual", "none", "none", True),
+        )
 
     def test_create_makes_empty_directory_and_record_without_git(self):
         workspace = self.root / "new-parent" / "created"
@@ -122,6 +130,7 @@ class RegistryTests(unittest.TestCase):
         workspace = self.root / "space name"
         workspace.mkdir()
         ops_brain.attach(self.args(name="客户甲", workspace=str(workspace)))
+        self.initialize_workspace(workspace)
         output = io.StringIO()
         with patch("ops_brain.subprocess.Popen") as popen, redirect_stdout(output):
             self.assertEqual(ops_brain.open_workspace(self.args(client="客户甲", app=None)), 0)
@@ -133,6 +142,7 @@ class RegistryTests(unittest.TestCase):
         workspace = self.root / "client"
         workspace.mkdir()
         ops_brain.attach(self.args(name="客户甲", workspace=str(workspace)))
+        self.initialize_workspace(workspace)
         before = self.registry.read_bytes()
         with patch("ops_brain.subprocess.Popen", side_effect=OSError("missing")):
             with self.assertRaises(ops_brain.RegistryError):
@@ -144,7 +154,7 @@ class RegistryTests(unittest.TestCase):
         workspace.mkdir()
         ops_brain.attach(self.args(name="客户甲", workspace=str(workspace)))
         workspace.rmdir()
-        with self.assertRaisesRegex(ops_brain.RegistryError, "已不存在"):
+        with self.assertRaisesRegex(ops_brain.RegistryError, "workspace does not exist"):
             ops_brain.open_workspace(self.args(client="客户甲", app=None))
 
     def test_create_rejects_an_existing_regular_file(self):
@@ -279,6 +289,7 @@ class RegistryTests(unittest.TestCase):
         workspace = self.root / "客户 工作区"
         workspace.mkdir()
         ops_brain.attach(self.args(name="中文 客户", workspace=str(workspace)))
+        self.initialize_workspace(workspace)
         output, errors = io.StringIO(), io.StringIO()
         with redirect_stdout(output), patch("sys.stderr", errors):
             self.assertEqual(ops_brain.main(["--registry", str(self.registry), "list", "--json"]), 0)
