@@ -40,8 +40,16 @@ class AuthorityContractTests(unittest.TestCase):
 
     def test_core_requires_doctor_return_before_final_judgment(self):
         self.assertIn("Invoke the `ops-brain-runtime:doctor-evidence` agent", self.core)
+        self.assertIn("through the Agent tool", self.core)
         self.assertIn("Resume the relevant Cheat protocol", self.core)
         self.assertIn("You own the user-facing final answer", self.core)
+        self.assertIn("Never let the Doctor rediscover or guess a client path", self.core)
+
+    def test_doctor_cannot_discover_client_or_skill_paths(self):
+        self.assertIn("Never scan or discover Skills", self.doctor)
+        self.assertIn("Never guess a client path", self.doctor)
+        self.assertIn("Do not open client Cheat state", self.doctor)
+        self.assertIn("immediately return an unavailable result", self.doctor)
 
     def test_missing_state_policy_is_fail_closed(self):
         self.assertEqual(self.contract["missing_state"], "fail-closed")

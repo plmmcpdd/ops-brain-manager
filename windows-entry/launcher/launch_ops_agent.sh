@@ -9,6 +9,8 @@ SHARED_CAPABILITY_MANIFEST="${OPS_BRAIN_SHARED_CAPABILITY_MANIFEST:-/home/rong/p
 RUNTIME_VALIDATOR="${OPS_BRAIN_RUNTIME_VALIDATOR:-/home/rong/projects/content-ops-lab/ops-brain-manager/ops_brain_runtime.py}"
 AUTHORITY_PLUGIN="${OPS_BRAIN_AUTHORITY_PLUGIN:-/home/rong/projects/content-ops-lab/ops-brain-manager/runtime/ops-brain-runtime}"
 PRIMARY_AGENT="${OPS_BRAIN_PRIMARY_AGENT:-ops-brain-runtime:ops-brain-core}"
+CHEAT_RUNTIME="${OPS_BRAIN_CHEAT_RUNTIME:-/home/rong/tools/cheat-on-content}"
+DOCTOR_RUNTIME="${OPS_BRAIN_DOCTOR_RUNTIME:-/home/rong/.claude/skills/social-account-doctor}"
 export PATH="$HOME/.local/bin:$PATH"
 
 fail() { printf 'Ops Brain Agent error: %s\n' "$1" >&2; exit "${2:-2}"; }
@@ -64,6 +66,8 @@ command = [
     "--setting-sources", "project",
     "--plugin-dir", os.environ["OPS_BRAIN_AUTHORITY_PLUGIN"],
     "--agent", os.environ["OPS_BRAIN_PRIMARY_AGENT"],
+    "--add-dir", os.environ["OPS_BRAIN_CHEAT_RUNTIME"],
+    "--add-dir", os.environ["OPS_BRAIN_DOCTOR_RUNTIME"],
     "--append-system-prompt", bootstrap,
 ]
 raise SystemExit(subprocess.run(command, env=env).returncode)
@@ -79,8 +83,12 @@ validate_authority_runtime() {
   [[ -f "$AUTHORITY_PLUGIN/agents/ops-brain-core.md" ]] || fail 'Ops Brain primary agent is missing' 22
   [[ -f "$AUTHORITY_PLUGIN/agents/doctor-evidence.md" ]] || fail 'Ops Brain Doctor evidence agent is missing' 22
   [[ "$PRIMARY_AGENT" == 'ops-brain-runtime:ops-brain-core' ]] || fail 'unsupported primary agent override' 22
+  [[ -f "$CHEAT_RUNTIME/SKILL.md" ]] || fail 'shared read-only Cheat implementation is missing' 22
+  [[ -f "$DOCTOR_RUNTIME/SKILL.md" ]] || fail 'Doctor evidence implementation is missing' 22
   export OPS_BRAIN_AUTHORITY_PLUGIN="$AUTHORITY_PLUGIN"
   export OPS_BRAIN_PRIMARY_AGENT="$PRIMARY_AGENT"
+  export OPS_BRAIN_CHEAT_RUNTIME="$CHEAT_RUNTIME"
+  export OPS_BRAIN_DOCTOR_RUNTIME="$DOCTOR_RUNTIME"
 }
 validate_bootstrap() {
   python3 - "$CLIENT_ID" "$WORKSPACE" "$BOOTSTRAP_FILE" <<'PY'
@@ -188,7 +196,7 @@ printf 'Current client: %s\nCurrent workspace: %s\nOps Brain bootstrap verified;
 if [[ -f "$SHARED_CAPABILITY_MANIFEST" ]]; then
   run_agent_with_shared_capability_env
 else
-  "$AGENT_COMMAND" --setting-sources project --plugin-dir "$AUTHORITY_PLUGIN" --agent "$PRIMARY_AGENT" --append-system-prompt "$(<"$BOOTSTRAP_FILE")"
+  "$AGENT_COMMAND" --setting-sources project --plugin-dir "$AUTHORITY_PLUGIN" --agent "$PRIMARY_AGENT" --add-dir "$CHEAT_RUNTIME" --add-dir "$DOCTOR_RUNTIME" --append-system-prompt "$(<"$BOOTSTRAP_FILE")"
 fi
 exit_code=$?
 printf 'Claude Code exited with code: %s\n' "$exit_code"
