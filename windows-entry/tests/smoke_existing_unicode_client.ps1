@@ -7,6 +7,8 @@ $projection = Join-Path (Join-Path $WindowsRoot $clientsFolder) $clientName
 Import-Module (Join-Path $WindowsRoot ($systemFolder + '\Launcher\OpsBrainLauncher.psm1')) -Force
 $runtime = Get-OpsRuntime -Root $WindowsRoot
 $launch = Test-OpsProjectionIdentity -ProjectionRoot $projection -Runtime $runtime
+$codeWorkspace = New-OpsWorkspace -ProjectionRoot $projection -Launch $launch -Runtime $runtime
+$task = (Get-Content -LiteralPath $codeWorkspace -Raw -Encoding UTF8 | ConvertFrom-Json).tasks.tasks[0]
 $wslTemp = & wsl.exe -d $runtime.wsl_distribution -- mktemp -d /tmp/ops-brain-existing-unicode.XXXXXX
 if ($LASTEXITCODE -ne 0) { throw 'Cannot create existing-client smoke root.' }
 try {
@@ -22,7 +24,7 @@ chmod +x "$2"
     $command = "echo $encoded | base64 -d | bash -s -- '$wslTemp/home' '$wslTemp/mock-agent'"
     & wsl.exe -d $runtime.wsl_distribution -- bash -lc $command
     if ($LASTEXITCODE -ne 0) { throw 'Existing-client fixture setup failed.' }
-    & wsl.exe -d $runtime.wsl_distribution -- env "HOME=$wslTemp/home" "OPS_BRAIN_BASE_CLAUDE=$wslTemp/home/bin/claude" "OPS_BRAIN_AGENT_STATE_ROOT=$wslTemp/state" "OPS_BRAIN_EXPECTED_CLIENT_ID=$clientName" "OPS_BRAIN_METADATA_COPY=$wslTemp/metadata.json" "OPS_BRAIN_RESULT=$wslTemp/result" bash $runtime.agent_launcher_wsl $clientName $launch.workspace "$wslTemp/mock-agent"
+    & wsl.exe -d $runtime.wsl_distribution -- env "HOME=$wslTemp/home" "OPS_BRAIN_BASE_CLAUDE=$wslTemp/home/bin/claude" "OPS_BRAIN_AGENT_STATE_ROOT=$wslTemp/state" "OPS_BRAIN_EXPECTED_CLIENT_ID=$clientName" "OPS_BRAIN_METADATA_COPY=$wslTemp/metadata.json" "OPS_BRAIN_RESULT=$wslTemp/result" bash $runtime.agent_launcher_wsl $clientName $launch.workspace "$wslTemp/mock-agent" $task.args[4]
     if ($LASTEXITCODE -ne 0) { throw 'Existing Unicode mock launch failed.' }
     $result = & wsl.exe -d $runtime.wsl_distribution -- cat "$wslTemp/result"
     $metadata = ((& wsl.exe -d $runtime.wsl_distribution -- cat "$wslTemp/metadata.json") -join "`n") | ConvertFrom-Json

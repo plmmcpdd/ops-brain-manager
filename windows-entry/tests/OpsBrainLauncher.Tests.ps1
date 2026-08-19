@@ -127,12 +127,14 @@ exit 0
             $LASTEXITCODE | Should -Be 0
         } finally { Remove-Item Env:OPS_BRAIN_TEST_MODE -ErrorAction SilentlyContinue; if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Recurse -Force } }
     }
-    It 'generates an Agent folderOpen task only when enabled without secrets or prompts' {
+    It 'generates an Agent folderOpen task with an explicit bootstrap path but no inline prompt' {
         $sourceRoot = $env:OPS_BRAIN_LAUNCHER_SOURCE
         $temp = Join-Path $env:TEMP ('ops-brain-task-' + [guid]::NewGuid().ToString())
         try {
             Import-Module (Join-Path $sourceRoot 'launcher\OpsBrainLauncher.psm1') -Force
             $launch = [pscustomobject]@{ client_id='client-a'; display_name='Client A'; workspace='/tmp/client-a' }
+            New-Item -ItemType Directory -Path (Join-Path $temp '.ops-launch') -Force | Out-Null
+            Write-Utf8TextNoBom -LiteralPath (Join-Path $temp '.ops-launch\initial_prompt.txt') -Text (Get-OpsBootstrapText -Client $launch)
             $disabled = New-OpsWorkspace -ProjectionRoot $temp -Launch $launch -Runtime ([pscustomobject]@{ auto_start_agent=$false })
             (Get-Content -LiteralPath $disabled -Raw -Encoding UTF8 | ConvertFrom-Json).PSObject.Properties.Name | Should -Not -Contain 'tasks'
             $enabled = New-OpsWorkspace -ProjectionRoot $temp -Launch $launch -Runtime ([pscustomobject]@{ auto_start_agent=$true; agent_launcher_wsl='/tmp/launch_ops_agent.sh'; agent_command_wsl='/tmp/claude-deepseek' })
@@ -142,7 +144,9 @@ exit 0
             $task.options.cwd | Should -Be '/tmp/client-a'
             $task.runOptions.runOn | Should -Be 'folderOpen'
             $task.runOptions.instanceLimit | Should -Be 1
-            ($task.args -join ' ') | Should -Not -Match 'prompt|token|key'
+            $task.args.Count | Should -Be 5
+            $task.args[4] | Should -Match '/\.ops-launch/initial_prompt\.txt$'
+            ($task.args[0..3] -join ' ') | Should -Not -Match 'prompt|token|key'
         } finally { if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Recurse -Force } }
     }
     It 'keeps WSL stderr separate from Manager JSON stdout and finds fallback code.cmd' {

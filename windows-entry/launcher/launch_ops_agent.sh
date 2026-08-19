@@ -34,7 +34,7 @@ wait_for_file() {
   return 1
 }
 run_agent_with_shared_capability_env() {
-  python3 - "$SHARED_CAPABILITY_MANIFEST" "$AGENT_COMMAND" <<'PY'
+  python3 - "$SHARED_CAPABILITY_MANIFEST" "$AGENT_COMMAND" "$BOOTSTRAP_FILE" <<'PY'
 import json, os, re, subprocess, sys
 from pathlib import Path
 
@@ -55,7 +55,40 @@ for capability in manifest.get("capabilities", []):
             if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
                 value = value[1:-1]
             env[key] = value
-raise SystemExit(subprocess.run([sys.argv[2]], env=env).returncode)
+bootstrap = Path(sys.argv[3]).read_text(encoding="utf-8")
+raise SystemExit(subprocess.run([sys.argv[2], "--append-system-prompt", bootstrap], env=env).returncode)
+PY
+}
+validate_bootstrap() {
+  python3 - "$CLIENT_ID" "$WORKSPACE" "$BOOTSTRAP_FILE" <<'PY'
+import sys
+from pathlib import Path
+
+client_id, workspace, raw_bootstrap = sys.argv[1:]
+try:
+    bootstrap = Path(raw_bootstrap)
+    if not bootstrap.is_absolute() or bootstrap.name != "initial_prompt.txt":
+        raise ValueError("bootstrap path must be absolute and named initial_prompt.txt")
+    # The generated projection contract is .../<client_id>/.ops-launch/initial_prompt.txt.
+    if bootstrap.parent.name != ".ops-launch" or bootstrap.parent.parent.name != client_id:
+        raise ValueError("bootstrap path does not belong to current client")
+    resolved = bootstrap.resolve(strict=True)
+    if resolved != bootstrap or not resolved.is_file():
+        raise ValueError("bootstrap must be a regular file without symlink indirection")
+    text = resolved.read_text(encoding="utf-8")
+    required = {
+        "OPS_BRAIN_BOOTSTRAP v1",
+        f"client_id: {client_id}",
+        f"workspace: {workspace}",
+        "role: Ops Brain / 运营大脑",
+        "boundary: 未收到用户明确任务前，不得自行执行生产动作。",
+        "boundary: 不得修改共享 Cheat / Shared Runtime；客户数据、客户状态和共享能力必须保持边界。",
+    }
+    if required.difference(text.splitlines()):
+        raise ValueError("bootstrap client identity or required contract is invalid")
+except (OSError, UnicodeError, ValueError) as error:
+    print(f"OPS_BRAIN_BOOTSTRAP_FAILED: {error}", file=sys.stderr)
+    raise SystemExit(20)
 PY
 }
 lock_metadata_pid() { sed -n 's/.*"wrapper_pid"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$1/metadata.json" 2>/dev/null | head -n 1; }
@@ -102,8 +135,8 @@ case "${1:-}" in
   --clear-stale) clear_stale "${2:-}"; exit 0 ;;
 esac
 
-[[ "$#" -eq 3 ]] || fail 'usage: launch_ops_agent.sh client_id workspace agent_command'
-CLIENT_ID="$1"; WORKSPACE="$2"; AGENT_COMMAND="$3"
+[[ "$#" -eq 4 ]] || fail 'usage: launch_ops_agent.sh client_id workspace agent_command bootstrap_file'
+CLIENT_ID="$1"; WORKSPACE="$2"; AGENT_COMMAND="$3"; BOOTSTRAP_FILE="$4"
 LOCK_DIR="$(lock_path_for_client "$CLIENT_ID")" || fail 'invalid client_id' 2
 [[ ! -L "$LOCK_DIR" ]] || fail 'unsafe symbolic-link session lock' 2
 [[ "$WORKSPACE" = /* && -d "$WORKSPACE" ]] || fail 'workspace must be an existing absolute directory' 2
@@ -111,6 +144,7 @@ LOCK_DIR="$(lock_path_for_client "$CLIENT_ID")" || fail 'invalid client_id' 2
 wait_for_file "$AGENT_COMMAND" || fail 'agent_command is unavailable after bounded retry' 5
 [[ -f "$ENV_FILE" ]] || fail 'DeepSeek environment file is missing' 6
 wait_for_file "$BASE_CLAUDE" || fail 'Claude executable is unavailable after bounded retry' 5
+validate_bootstrap || exit $?
 mkdir -p -- "$STATE_ROOT"
 if ! mkdir -- "$LOCK_DIR" 2>/dev/null; then
   [[ ! -L "$LOCK_DIR" ]] || fail 'unsafe symbolic-link session lock' 2
@@ -121,11 +155,11 @@ fi
 trap remove_own_lock EXIT INT TERM
 write_metadata || fail 'could not write session metadata' 12
 cd "$WORKSPACE" || fail 'could not enter workspace' 2
-printf 'Current client: %s\nCurrent workspace: %s\nStarting Claude Code through claude-deepseek...\n' "$CLIENT_ID" "$WORKSPACE"
+printf 'Current client: %s\nCurrent workspace: %s\nOps Brain bootstrap verified; starting Claude Code through claude-deepseek...\n' "$CLIENT_ID" "$WORKSPACE"
 if [[ -f "$SHARED_CAPABILITY_MANIFEST" ]]; then
   run_agent_with_shared_capability_env
 else
-  "$AGENT_COMMAND"
+  "$AGENT_COMMAND" --append-system-prompt "$(<"$BOOTSTRAP_FILE")"
 fi
 exit_code=$?
 printf 'Claude Code exited with code: %s\n' "$exit_code"

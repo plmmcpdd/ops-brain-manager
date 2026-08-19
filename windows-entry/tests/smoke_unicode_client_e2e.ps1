@@ -41,7 +41,7 @@ chmod +x "$2"
     & wsl.exe -d Ubuntu-E -- test -x "$wslTemp/mock-agent"
     if ($LASTEXITCODE -ne 0) { throw 'Mock Agent fixture is not executable.' }
     $launcher = '/home/rong/projects/content-ops-lab/ops-brain-manager/windows-entry/launcher/launch_ops_agent.sh'
-    & wsl.exe -d Ubuntu-E -- env "HOME=$wslTemp/home" "OPS_BRAIN_BASE_CLAUDE=$wslTemp/home/bin/claude" "OPS_BRAIN_AGENT_STATE_ROOT=$wslTemp/state" "OPS_BRAIN_E2E_RESULT=$wslTemp/result" bash $launcher $clientName $workspace "$wslTemp/mock-agent"
+    & wsl.exe -d Ubuntu-E -- env "HOME=$wslTemp/home" "OPS_BRAIN_BASE_CLAUDE=$wslTemp/home/bin/claude" "OPS_BRAIN_AGENT_STATE_ROOT=$wslTemp/state" "OPS_BRAIN_E2E_RESULT=$wslTemp/result" bash $launcher $clientName $workspace "$wslTemp/mock-agent" $task.args[4]
     if ($LASTEXITCODE -ne 0) { throw 'Unicode Agent launcher smoke failed.' }
     $result = & wsl.exe -d Ubuntu-E -- cat "$wslTemp/result"
     if ((@($result) -join "`n") -notmatch 'started:') { throw 'Mock Agent was not reached.' }

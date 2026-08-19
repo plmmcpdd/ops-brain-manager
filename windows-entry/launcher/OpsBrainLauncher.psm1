@@ -34,6 +34,22 @@ function Write-AsciiCmd {
     [System.IO.File]::WriteAllText($LiteralPath, $crlf, [System.Text.Encoding]::ASCII)
 }
 
+function Get-OpsBootstrapText {
+    param([Parameter(Mandatory=$true)]$Client)
+    return (@(
+        'OPS_BRAIN_BOOTSTRAP v1'
+        ('client_id: ' + [string]$Client.client_id)
+        ('display_name: ' + [string]$Client.display_name)
+        ('workspace: ' + [string]$Client.workspace)
+        'role: Ops Brain / 运营大脑'
+        'workspace_type: 客户级长期运营工作区，不是普通代码仓库会话。'
+        'state_entry: 先读取并理解当前客户工作区中的 Cheat / 客户状态入口；不要扫描无关磁盘。'
+        'boundary: 未收到用户明确任务前，不得自行执行生产动作。'
+        'boundary: 不得修改共享 Cheat / Shared Runtime；客户数据、客户状态和共享能力必须保持边界。'
+        'capabilities: 仅按当前已启用的 shared capabilities 使用能力；不得把共享能力配置复制进客户目录。'
+    ) -join "`n") + "`n"
+}
+
 function Get-OpsRuntime {
     param([Parameter(Mandatory=$true)][string]$Root)
     $path = Join-Path $Root '配置\runtime.json'
@@ -139,7 +155,7 @@ function New-OpsProjection {
     New-Item -ItemType Directory -Path (Join-Path $projection '.ops-launch\logs') -Force | Out-Null
     $info = [ordered]@{ version=1; client_id=$Client.client_id; display_name=$Client.display_name; workspace=$Client.workspace; status=$Client.status; synced_at=(Get-Date).ToUniversalTime().ToString('o') }
     Write-Utf8NoBom -LiteralPath (Join-Path $projection '客户信息.json') -Value $info
-    Write-Utf8TextNoBom -LiteralPath (Join-Path $projection '.ops-launch\initial_prompt.txt') -Text ("当前客户：" + $Client.display_name + "`n当前工作区：" + $Client.workspace + "`n请先读取并报告当前Cheat状态。在用户给出明确任务前，不要自动执行生产动作。不得修改共享Cheat Runtime。`n")
+    Write-Utf8TextNoBom -LiteralPath (Join-Path $projection '.ops-launch\initial_prompt.txt') -Text (Get-OpsBootstrapText -Client $Client)
     Write-AsciiCmd -LiteralPath (Join-Path $projection '打开运营大脑.cmd') -Text '@echo off
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0open_ops_brain_entry.ps1"
 set "OPS_EXIT=%ERRORLEVEL%"
@@ -195,10 +211,13 @@ function New-OpsWorkspace {
     param([Parameter(Mandatory=$true)][string]$ProjectionRoot, [Parameter(Mandatory=$true)]$Launch, [Parameter(Mandatory=$true)]$Runtime)
     $workspace = [ordered]@{ folders=@(@{ name=('运营工作区 - ' + [string]$Launch.display_name); path=[string]$Launch.workspace }) }
     if ([bool]$Runtime.auto_start_agent) {
+        $bootstrapPath = Join-Path $ProjectionRoot '.ops-launch\initial_prompt.txt'
+        if (-not (Test-Path -LiteralPath $bootstrapPath -PathType Leaf)) { throw "Missing client bootstrap artifact: $bootstrapPath" }
+        $bootstrapWsl = Convert-WindowsPathToWsl -Runtime $Runtime -LiteralPath $bootstrapPath
         $workspace.settings = [ordered]@{ 'task.allowAutomaticTasks'='on' }
         $workspace.tasks = [ordered]@{ version='2.0.0'; tasks=@([ordered]@{
             label='启动运营大脑 Agent'; type='process'; command='bash'
-            args=@([string]$Runtime.agent_launcher_wsl, [string]$Launch.client_id, [string]$Launch.workspace, [string]$Runtime.agent_command_wsl)
+            args=@([string]$Runtime.agent_launcher_wsl, [string]$Launch.client_id, [string]$Launch.workspace, [string]$Runtime.agent_command_wsl, [string]$bootstrapWsl)
             options=[ordered]@{ cwd=[string]$Launch.workspace }
             presentation=[ordered]@{ reveal='always'; focus=$true; panel='dedicated'; showReuseMessage=$false; clear=$false }
             runOptions=[ordered]@{ runOn='folderOpen'; instanceLimit=1 }
